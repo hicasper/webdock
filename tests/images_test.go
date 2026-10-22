@@ -10,8 +10,8 @@ func TestEdgeImageIncludesRequestedComponents(t *testing.T) {
 	text := read(t, "../images/edge/Dockerfile")
 	for _, want := range []string{
 		"FROM debian:trixie-slim",
-		"ARG S6_OVERLAY_VERSION=3.2.3.2",
-		"ARG NGINX_UI_VERSION=2.9.1",
+		"ARG S6_OVERLAY_VERSION=",
+		"ARG NGINX_UI_VERSION=",
 		"ARG NGINX_UI_SHA256_AMD64=",
 		"NGINX_UI_SHA256_ARM64=",
 		"TARGETARCH:-$(dpkg --print-architecture)",
@@ -100,6 +100,19 @@ func TestPHPFPMDirectivesUseCorrectSections(t *testing.T) {
 	}
 	if strings.Contains(text, "clear_env") {
 		t.Fatal("PHP-FPM should rely on the official docker.conf clear_env default")
+	}
+	for _, want := range []string{
+		"pm = ",
+		"pm.max_children = ",
+		"pm.start_servers = ",
+		"pm.min_spare_servers = ",
+		"pm.max_spare_servers = ",
+		"pm.max_requests = ",
+		"request_terminate_timeout = ",
+	} {
+		if !strings.Contains(text[www:], want) {
+			t.Errorf("PHP-FPM pool missing %q", want)
+		}
 	}
 }
 

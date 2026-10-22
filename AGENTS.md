@@ -135,7 +135,7 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 
 基础为官方 `php:8.4-fpm-trixie`。只通过 `mlocati/php-extension-installer` 安装扩展，不手写编译流程；Composer 从官方 Composer 镜像复制。
 
-`images/php/php.ini` 与 `templates/php/php.ini` 必须保持同步，`TestPHPIniTemplatesStayInSync` 会检查。`fpm.conf` 只保留必要覆盖，不要让实例配置意外覆盖官方 FPM 环境变量行为。
+`images/php/php.ini` 与 `templates/php/php.ini` 必须保持同步，`TestPHPIniTemplatesStayInSync` 会检查。`fpm.conf` 只保留必要覆盖，不要让实例配置意外覆盖官方 FPM 环境变量行为。当前动态池保持 5 个空闲 worker，并将 `pm.max_children` 上限设为 20；20 是突发上限而不是 20 个重型 PHP 请求的资源保证，调整前要同时考虑宿主机内存和单请求实际占用。
 
 ### `tests`
 
@@ -224,6 +224,7 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 - 不跟随不可信归档中的软链接；不要为了兼容性关闭 `validateEntry` 或 `ensureParentPath`。
 - 不在运行逻辑中加入“发现容器就 `docker stop`”的旁路。恢复必须在可能时通过可加载的 Compose 文件停止，并且停止后再次确认。
 - Nginx 模块必须通过 Debian 包来源安装，保留模块文件与启用软链接的分离；用户自行写 `conf` 时不应要求修改 Go 代码。
+- 镜像契约测试只验证必要的组件、配置键和安全边界，不要把可独立升级的补丁版本或可调参数数值写死；版本升级不应仅因常量变化导致测试失败。
 - 不把 README 写成开发手册；构建细节、发布流程和内部约束应放在 `AGENTS.md` 或 `CHANGELOG.md`。
 
 ## 修改与验证清单

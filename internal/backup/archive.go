@@ -14,6 +14,8 @@ import (
 
 var ErrForceRequired = errors.New("restore target already contains Webdock data; use --force")
 
+var restoreTargets = []string{"webdock.env", "config", "data", "sites", "logs"}
+
 type Options struct {
 	WithSites bool
 	WithLogs  bool
@@ -138,6 +140,23 @@ func Restore(root, archive string, force bool) error {
 	return restore(root, archive, force, nil)
 }
 
+// CheckRestoreTarget reports whether replacing root requires --force. Callers
+// can use this before stopping services so a rejected restore does not cause
+// unnecessary downtime.
+func CheckRestoreTarget(root string, force bool) error {
+	if force {
+		return nil
+	}
+	for _, name := range restoreTargets {
+		if _, err := os.Lstat(filepath.Join(root, name)); err == nil {
+			return ErrForceRequired
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect restore target %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // RestoreValidated restores an archive only when validate accepts the staged
 // instance. This lets callers reject malformed archives before replacing any
 // existing data.
@@ -149,15 +168,8 @@ func restore(root, archive string, force bool, validate func(string) error) erro
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create instance directory: %w", err)
 	}
-	targets := []string{"webdock.env", "config", "data", "sites", "logs"}
-	if !force {
-		for _, name := range targets {
-			if _, err := os.Lstat(filepath.Join(root, name)); err == nil {
-				return ErrForceRequired
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("inspect restore target %s: %w", name, err)
-			}
-		}
+	if err := CheckRestoreTarget(root, force); err != nil {
+		return err
 	}
 	stage, err := os.MkdirTemp(root, ".restore-stage-")
 	if err != nil {
@@ -223,7 +235,7 @@ func restore(root, archive string, force bool, validate func(string) error) erro
 		}
 		return cause
 	}
-	for _, name := range targets {
+	for _, name := range restoreTargets {
 		source := filepath.Join(stage, name)
 		if _, err := os.Lstat(source); errors.Is(err, os.ErrNotExist) {
 			continue

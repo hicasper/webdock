@@ -531,6 +531,42 @@ func TestRestoreIntoEmptyInstance(t *testing.T) {
 	}
 }
 
+func TestRestoreWithoutForceDoesNotStopRunningStack(t *testing.T) {
+	source := t.TempDir()
+	if _, err := instance.Init(source, "none"); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	if err := backup.Create(source, archive, backup.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if _, err := instance.Init(target, "none"); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		if strings.Contains(call, " ps --all --format ") {
+			return []byte("webdock-edge\trunning\n"), nil
+		}
+		return nil, nil
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	code := a.Run(context.Background(), []string{"-C", target, "restore", archive})
+	if code == 0 {
+		t.Fatal("restore without force unexpectedly succeeded")
+	}
+	if !strings.Contains(stderr.String(), backup.ErrForceRequired.Error()) {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(call, " stop") {
+			t.Fatalf("restore without force stopped the stack: %v", runner.calls)
+		}
+	}
+}
+
 func TestRestoreRefusesRunningContainersWithBrokenConfig(t *testing.T) {
 	source := t.TempDir()
 	if _, err := instance.Init(source, "none"); err != nil {

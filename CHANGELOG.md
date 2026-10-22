@@ -42,10 +42,12 @@
 - 修复恢复期间可能因归档软链接父路径导致目录穿越的问题，并补充目录级软链接往返测试。
 - 修复实例配置损坏且固定容器仍运行时，恢复到错误地尝试直接停止容器的问题；现在拒绝绕过经过校验的 Compose 配置。
 - 修复 Nginx UI ARM64 下载选择与构建时 `TARGETARCH` 为空时的架构回退问题。
+- 修复对运行中实例执行缺少 `--force` 的恢复时先停栈再报错的问题；现在会在触碰 Docker 前直接拒绝。
+- 调整 PHP-FPM 动态进程池：最多 20 个 worker、启动并保留 5 个空闲进程，每 5000 个请求回收，并将单请求硬超时限制为 60 秒。
 
 ### Validation
 
-2026-10-22 在 Debian amd64、1 vCPU / 512 MB 内存的 Linux Docker runner 上完成以下集成验证：
+2026-10-22 至 2026-10-23 在 Debian amd64、1 vCPU / 512 MB 内存的 Linux Docker runner 上完成以下集成验证：
 
 - `go test ./...`、`go test -race ./...`、`go vet ./...`、`staticcheck ./...` 和格式检查通过。
 - edge 与 PHP 镜像成功构建并启动，核心容器栈可初始化、启动、重启、停止并保持健康。
@@ -57,11 +59,14 @@
 - amd64 测试镜像体积：edge 约 308 MB，PHP 约 575 MB。
 - 两个 GitHub Actions 工作流均已通过 `actionlint`、YAML 解析和 shell 语法检查，引用的 Action 主版本标签已确认存在；真实 GitHub Runner 发布尚未触发。
 - 发布流程已在本地模拟：Linux amd64/arm64 静态二进制构建成功，SHA256 校验通过，`webdock --version` 输出 `webdock 0.1.0`。
+- 从公开 GitHub Release 下载 amd64 二进制并校验 SHA256；从 Docker Hub 拉取 edge/PHP 镜像后重新初始化并启动，确认发布产物可用。
+- 创建 2 个静态站和 2 个动态站，验证域名隔离、HTTP/HTTPS、gzip、默认主机 `444`、共享 PHP-FPM 与独立 Nginx 日志正常。
+- 验证 MySQL 与 PostgreSQL 切换、数据持久化、默认/完整备份、完整恢复及恢复到全新实例目录；恢复后的站点、软链接、日志和数据库数据均可启动使用。
+- 压测确认静态请求由 Nginx 独立承载；1 vCPU / 512 MB 环境下，PHP 短请求在 40 并发、1000 请求时无失败。100 并发突发会触发资源饱和，PHP 上限应按实际单请求内存和机器规格评估。
 
 ### Known Limitations
 
-- 尚未完成 arm64 实机构建与运行验证。
-- Docker Hub 多架构自动发布尚未实际触发验证。
+- 尚未完成 arm64 实机容器运行验证；Docker Hub 多架构发布工作流已成功执行。
 - 尚未完成长时间运行、宿主机重启和跨大版本升级演练。
 - 不支持 Docker Desktop、rootless Docker、Podman 和 SELinux 强制模式。
 - 当前没有稳定版本或兼容性承诺；实例目录格式变化需要在后续版本中明确迁移说明。

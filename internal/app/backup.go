@@ -85,6 +85,9 @@ func (a *App) cmdRestore(ctx context.Context, root string, args []string) error 
 	if err != nil {
 		return fmt.Errorf("resolve instance directory: %w", err)
 	}
+	if err := backup.CheckRestoreTarget(root, *force); err != nil {
+		return err
+	}
 
 	var current instance.Config
 	var wasRunning bool

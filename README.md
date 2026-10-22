@@ -125,7 +125,7 @@ Nginx 提供 Debian 风格的站点、模块和 stream 配置目录。GeoIP2、S
 
 Nginx 使用 100 秒 keepalive；TLS 禁用 1.0，保留 1.1，并启用 1.2/1.3。面向公网时可进一步按业务需要收紧 TLS 1.1。
 
-PHP 镜像已包含 Composer 和 `bcmath`、`exif`、`gd`、`intl`、MySQL/PostgreSQL、Redis、sockets、zip 等常用扩展。实例默认关闭错误回显、开启错误日志。
+PHP 镜像已包含 Composer 和 `bcmath`、`exif`、`gd`、`intl`、MySQL/PostgreSQL、Redis、sockets、zip 等常用扩展。实例默认关闭错误回显、开启错误日志；FPM 使用受限的动态进程池，限制单请求最长 60 秒并定期回收 worker，适合低内存单机。
 
 ## Valkey
 
