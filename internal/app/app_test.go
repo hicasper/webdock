@@ -63,6 +63,24 @@ func TestRunInitWithGlobalDirectory(t *testing.T) {
 	}
 }
 
+func TestRunVersion(t *testing.T) {
+	for _, arg := range []string{"version", "-v", "--version"} {
+		t.Run(arg, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr, &fakeRunner{})
+			a.Version = "0.1.0"
+
+			code := a.Run(context.Background(), []string{arg})
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+			}
+			if got, want := stdout.String(), "webdock 0.1.0\n"; got != want {
+				t.Fatalf("stdout = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestUpRendersBridgeAndVerifiesServices(t *testing.T) {
 	root := t.TempDir()
 	if _, err := instance.Init(root, "none"); err != nil {

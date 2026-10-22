@@ -24,9 +24,10 @@ type App struct {
 	LocalIPs      network.LocalIPProvider
 	ReadListeners func() ([]doctor.Listener, error)
 	Platform      string
+	Version       string
 }
 
-func New() *App {
+func New(version string) *App {
 	return &App{
 		Stdout:        os.Stdout,
 		Stderr:        os.Stderr,
@@ -36,6 +37,7 @@ func New() *App {
 		LocalIPs:      nil,
 		ReadListeners: doctor.ReadListeners,
 		Platform:      runtime.GOOS,
+		Version:       version,
 	}
 }
 
@@ -55,6 +57,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	switch command {
 	case "help", "-h", "--help":
 		a.usage()
+		return 0
+	case "version", "-v", "--version":
+		fmt.Fprintf(a.Stdout, "webdock %s\n", a.Version)
 		return 0
 	case "init":
 		err = a.cmdInit(ctx, root, args)
@@ -157,6 +162,7 @@ func (a *App) usage() {
 	fmt.Fprint(a.Stdout, `Usage: webdock [-C DIR] <command> [options]
 
 Commands:
+  version                                Show version
   init [DIR] [--db none|mysql|postgres]  Create an instance
   up [--pull]                            Start or update the stack
   down                                   Stop and remove the stack

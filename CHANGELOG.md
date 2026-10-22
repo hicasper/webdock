@@ -1,8 +1,8 @@
 # Changelog
 
-本项目的重要变更、设计调整和验证记录集中记录在这里。格式参考 Keep a Changelog；当前尚未发布稳定版本，变更先归入 `Unreleased`。
+本项目的重要变更、设计调整和验证记录集中记录在这里。格式参考 Keep a Changelog；项目在 1.0 前使用 `0.x.y` 版本号。
 
-## [Unreleased]
+## [0.1.0] - 2026-10-22
 
 ### Added
 
@@ -15,6 +15,8 @@
 - 新增 Nginx 目录规范和 Nginx UI 数据目录，支持 `sites-enabled`、`modules-enabled`、`streams-enabled` 等目录级软链接。
 - 新增离线备份与恢复：默认备份核心实例状态，可选包含站点与日志；恢复支持预校验、覆盖前回滚和软链接安全检查。
 - 新增 GitHub Actions CI/CD 工作流：Go 格式、测试、race、vet、staticcheck、CLI 构建，以及 Docker 镜像构建和 Docker Hub 多架构发布；同时保留默认关闭的 GHCR 发布代码。
+- 新增 GitHub Actions 二进制发布工作流：代码变化时构建 Linux amd64/arm64 可执行文件，并持续覆盖更新同一个 `v0.1.0` Release 中的同名资产。
+- 新增 `webdock version`、`webdock --version` 和 `webdock -v`，版本号统一读取 `cmd/webdock/VERSION`。
 
 ### Changed
 
@@ -29,7 +31,7 @@
 - 备份与恢复改为基于固定容器名检测运行态，不再依赖 `webdock.env` 或 `compose.yaml` 是否可加载来决定是否存在活动容器。
 - 恢复流程先在临时目录完成解压和实例校验，再替换目标数据；归档中的软链接允许正常目录链接，但禁止绝对路径、越界目标和通过软链接父目录继续写入。
 - CI 镜像发布标签暂定为 `hicasper/webdock-edge:latest` 和 `hicasper/webdock-php:8.4`，不锁定 image digest。
-- 文档拆分为面向用户的 `README.md`、记录变更和验证状态的 `CHANGELOG.md`，以及面向维护者的架构和修改约束 `AGENTS.md`。
+- 文档拆分为精简的面向用户 `README.md`、记录变更和验证状态的 `CHANGELOG.md`，以及面向维护者的架构和修改约束 `AGENTS.md`。
 
 ### Fixed
 
@@ -53,7 +55,8 @@
 - MySQL 8.4 与 PostgreSQL 18 均可启停、切换、跨 `down/up` 持久化，并可完成运行状态下的备份恢复。
 - 默认、`--with-sites`、`--with-logs` 三种备份路径均已验证；MySQL socket、Nginx UI socket 等运行时文件不会进入归档。
 - amd64 测试镜像体积：edge 约 308 MB，PHP 约 575 MB。
-- `.github/workflows/ci.yml` 已通过 `actionlint` 和 YAML 解析检查，引用的 GitHub Actions 主版本标签已确认存在；真实 GitHub Runner 发布尚未触发。
+- 两个 GitHub Actions 工作流均已通过 `actionlint`、YAML 解析和 shell 语法检查，引用的 Action 主版本标签已确认存在；真实 GitHub Runner 发布尚未触发。
+- 发布流程已在本地模拟：Linux amd64/arm64 静态二进制构建成功，SHA256 校验通过，`webdock --version` 输出 `webdock 0.1.0`。
 
 ### Known Limitations
 

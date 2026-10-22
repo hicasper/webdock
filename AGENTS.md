@@ -25,13 +25,16 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 - 归档恢复可以保留实例内部的相对软链接，但必须拒绝绝对路径、越界目标、重复 entry，以及通过软链接父目录继续写入。
 - 镜像标签只保证大版本兼容，不锁 digest。当前发布标签为 `hicasper/webdock-edge:latest` 和 `hicasper/webdock-php:8.4`。
 - 不提交 `runner-info.test`、`runner-key.test` 或其他 `runner-*.test` 文件；它们可能包含真实 runner 的访问信息。
+- 项目在 1.0 前使用 `0.x.y` 版本号；唯一版本源是 `cmd/webdock/VERSION`，Release tag 由它生成。
 
 ## 仓库目录
 
 ```text
 .
-├── .github/workflows/       # GitHub Actions CI/CD
-├── cmd/webdock/             # CLI 入口，仅负责信号处理和调用 app.Run
+├── .github/workflows/       # GitHub Actions CI/CD 与二进制 Release
+├── cmd/webdock/             # CLI 入口
+│   ├── VERSION              # 0.x.y 唯一版本源
+│   └── main.go              # 嵌入版本、信号处理和 app.Run 调用
 ├── internal/app/            # 命令编排、生命周期、运行探测和跨包流程
 ├── internal/backup/         # tar.gz 备份、恢复、路径与软链接校验
 ├── internal/docker/         # Docker 命令执行器和 Compose 参数封装
@@ -52,7 +55,7 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 
 ### `cmd/webdock`
 
-`main.go` 只创建可取消的 context、处理 SIGINT/SIGTERM，然后调用 `app.New().Run`。业务逻辑不要放在这里。
+`main.go` 通过 `go:embed` 读取 `VERSION`，创建可取消的 context、处理 SIGINT/SIGTERM，然后调用 `app.New(version).Run`。业务逻辑不要放在这里。版本命令由 `internal/app` 输出，版本文件由发布工作流读取。
 
 ### `internal/app`
 
@@ -142,12 +145,20 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 
 ### `.github/workflows`
 
-`ci.yml` 是唯一发布工作流：
+`ci.yml` 负责持续集成与容器发布：
 
 1. Go 测试在 Linux 上执行格式检查、`go test`、race、vet 和构建。
-2. Docker 构建使用 Buildx + QEMU；PR 只构建 amd64，main/tag 发布时构建 amd64/arm64。
+2. Docker 构建使用 Buildx + QEMU；PR 只构建 amd64，master/main 或 tag 发布时构建 amd64/arm64。
 3. Docker Hub 登录使用 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` secrets。
 4. GHCR 发布代码保留但默认关闭，由工作流中的 `PUBLISH_GHCR` 变量控制；启用前需确认仓库 `GITHUB_TOKEN` 有 `packages: write` 权限，并将变量设为 `true`。
+
+`release-binaries.yml` 负责 CLI 二进制发布：
+
+1. 仅在 Go、模板、版本文件或工作流自身发生变化的 master/main 推送时触发，也支持手动触发。
+2. 测试、race、vet 和 staticcheck 通过后，以 `CGO_ENABLED=0` 构建 Linux amd64/arm64 二进制并生成 SHA256 文件。
+3. 从 `cmd/webdock/VERSION` 得到 `v0.x.y` tag，创建或更新对应 Release。
+4. 同名二进制、校验文件和 `build-info.txt` 使用 GitHub CLI 的 `--clobber` 原地覆盖，不随每次提交累积资产。
+5. 修改版本文件会创建新的 Release tag；版本不变时只更新当前 Release 资产。
 
 不要在工作流中写入明文 Docker Hub token，也不要把 registry 凭据烘焙进镜像。
 
@@ -213,6 +224,7 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 - 不跟随不可信归档中的软链接；不要为了兼容性关闭 `validateEntry` 或 `ensureParentPath`。
 - 不在运行逻辑中加入“发现容器就 `docker stop`”的旁路。恢复必须在可能时通过可加载的 Compose 文件停止，并且停止后再次确认。
 - Nginx 模块必须通过 Debian 包来源安装，保留模块文件与启用软链接的分离；用户自行写 `conf` 时不应要求修改 Go 代码。
+- 不把 README 写成开发手册；构建细节、发布流程和内部约束应放在 `AGENTS.md` 或 `CHANGELOG.md`。
 
 ## 修改与验证清单
 
@@ -224,6 +236,7 @@ go test ./...
 go vet ./...
 go test -race ./...
 go build -trimpath -o bin/webdock ./cmd/webdock
+./bin/webdock --version
 ```
 
 涉及 Dockerfile 或模板时额外执行：
@@ -241,6 +254,7 @@ cd /tmp/webdock-test
 webdock up
 webdock status
 webdock doctor
+webdock --version
 webdock backup
 webdock restore --force backups/<archive>.tar.gz
 webdock down
@@ -248,4 +262,4 @@ webdock down
 
 对于生命周期、数据库切换、备份恢复和网络发现的改动，必须补充 fake runner 单元测试；不要在单元测试中依赖宿主机 Docker。修改 `compose.yaml.tmpl`、实例目录或容器名时，必须同时检查 `tests/images_test.go`、`internal/app/app_test.go`、`internal/instance/instance_test.go` 和 `internal/render/render_test.go`。
 
-改动完成后，更新 `CHANGELOG.md` 的 `Unreleased`；如果修改会影响用户安装、目录、命令、配置或端口，再同步 `README.md`。
+改动完成后更新 `CHANGELOG.md`；尚未进入新版本的改动放入新的 `Unreleased` 段，不重写已发布的 `0.1.0` 记录。如果修改会影响用户安装、目录、命令、配置或端口，再同步 `README.md`。
