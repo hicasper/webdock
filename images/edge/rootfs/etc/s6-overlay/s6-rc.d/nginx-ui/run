@@ -1,0 +1,12 @@
+#!/command/with-contenv sh
+umask 077
+if [ -d /etc/nginx-ui ]; then
+    chmod 700 /etc/nginx-ui
+fi
+if [ -f /etc/nginx-ui/app.ini ]; then
+    chmod 600 /etc/nginx-ui/app.ini
+fi
+if [ -f /etc/nginx-ui/database.db ]; then
+    chmod 600 /etc/nginx-ui/database.db
+fi
+exec /usr/local/bin/nginx-ui --config /etc/nginx-ui/app.ini

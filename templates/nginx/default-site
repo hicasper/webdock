@@ -1,0 +1,16 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
+
+    ssl_protocols TLSv1.1 TLSv1.2 TLSv1.3;
+    ssl_certificate      /etc/nginx/ssl/default.crt;
+    ssl_certificate_key  /etc/nginx/ssl/default.key;
+
+    server_name _;
+    return 444;
+
+    access_log off;
+}

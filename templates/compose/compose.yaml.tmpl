@@ -1,0 +1,127 @@
+name: webdock
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "2"
+
+services:
+  edge:
+    image: hicasper/webdock-edge:latest
+    container_name: webdock-edge
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: "${TZ:-UTC}"
+      NGINX_UI_SERVER_HOST: "127.0.0.1"
+      NGINX_UI_SERVER_PORT: "9001"
+      NGINX_UI_SERVER_RUN_MODE: "release"
+      NGINX_UI_NGINX_CONFIG_DIR: "/etc/nginx"
+      NGINX_UI_WORKING_DIR: "/etc/nginx-ui"
+      NGINX_UI_OFFICIAL_DOCKER: "true"
+      NGINX_UI_APP_JWT_SECRET: "${NGINX_UI_APP_JWT_SECRET:?set by webdock init}"
+      NGINX_UI_CRYPTO_SECRET: "${NGINX_UI_CRYPTO_SECRET:?set by webdock init}"
+      NGINX_UI_LOGROTATE_ENABLED: "true"
+      NGINX_UI_LOGROTATE_INTERVAL: "1440"
+    volumes:
+      - ./config/nginx:/etc/nginx
+      - ./data/nginx-ui:/etc/nginx-ui
+      - ./logs/nginx:/var/log/nginx
+      - ./sites:/var/www
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t >/dev/null 2>&1 && kill -0 \"$$(cat /run/nginx.pid)\" && curl -fsS http://127.0.0.1:9001/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+
+  php:
+    image: hicasper/webdock-php:8.4
+    container_name: webdock-php
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ./config/php/php.ini:/usr/local/etc/php/conf.d/zz-webdock.ini:ro
+      - ./sites:/var/www
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm -t >/dev/null 2>&1 && php -r '$$s=@fsockopen(\"127.0.0.1\",9000); exit($$s?0:1);'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  valkey:
+    image: valkey/valkey:8-trixie
+    container_name: webdock-valkey
+    restart: unless-stopped
+    network_mode: host
+    command: ["valkey-server", "/etc/valkey/valkey.conf"]
+    environment:
+      VALKEY_PASSWORD: "${VALKEY_PASSWORD:?set by webdock init}"
+    volumes:
+      - ./config/valkey:/etc/valkey:ro
+      - ./data/valkey:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli -h 127.0.0.1 -p 6379 --user webdock ping | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  mysql:
+    image: mysql:8.4
+    container_name: webdock-mysql
+    restart: unless-stopped
+    network_mode: host
+    profiles: ["mysql"]
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?set by webdock init}"
+      MYSQL_DATABASE: "webdock"
+      MYSQL_USER: "webdock"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?set by webdock init}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ./config/mysql/my.cnf:/etc/mysql/conf.d/webdock.cnf:ro
+      - ./data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    stop_grace_period: 60s
+    logging: *default-logging
+
+  postgres:
+    image: postgres:18
+    container_name: webdock-postgres
+    restart: unless-stopped
+    network_mode: host
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: "webdock"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set by webdock init}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    command:
+      - postgres
+      - -c
+      - listen_addresses=127.0.0.1
+      - -c
+      - log_min_messages=warning
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d webdock"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 60s
+    logging: *default-logging

@@ -1,0 +1,14 @@
+bind {{.Bind}}
+protected-mode yes
+port 6379
+daemonize no
+dir /data
+appendonly yes
+appendfsync everysec
+maxmemory {{.MaxMemory}}
+maxmemory-policy allkeys-lru
+loglevel warning
+logfile ""
+
+user default off
+user webdock on #{{.PasswordHash}} ~* &* +@all
