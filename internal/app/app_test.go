@@ -96,7 +96,7 @@ func TestUpRendersBridgeAndVerifiesServices(t *testing.T) {
 		case strings.Contains(call, " up -d --wait"):
 			return nil, nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\n"), nil
+			return []byte("nginx\nphp\nvalkey\n"), nil
 		case strings.Contains(call, " exec -T "):
 			return nil, nil
 		case strings.Contains(call, " restart valkey"):
@@ -121,16 +121,16 @@ func TestUpRendersBridgeAndVerifiesServices(t *testing.T) {
 	if !strings.Contains(string(valkey), "bind 127.0.0.1 172.17.0.1") {
 		t.Fatalf("Valkey config = %s", valkey)
 	}
-	var sawUp, sawEdgeProbe, sawPHPProbe, sawValkeyProbe, sawValkeyUser, sawValkeyRestart bool
+	var sawUp, sawNginxProbe, sawPHPProbe, sawValkeyProbe, sawValkeyUser, sawValkeyRestart bool
 	for _, call := range runner.calls {
 		sawUp = sawUp || strings.Contains(call, " up -d --wait")
-		sawEdgeProbe = sawEdgeProbe || strings.Contains(call, "exec -T edge nginx -t")
+		sawNginxProbe = sawNginxProbe || strings.Contains(call, "exec -T nginx nginx -t")
 		sawPHPProbe = sawPHPProbe || strings.Contains(call, "exec -T php php-fpm -t")
 		sawValkeyProbe = sawValkeyProbe || strings.Contains(call, "exec -T valkey")
 		sawValkeyUser = sawValkeyUser || strings.Contains(call, "--user webdock")
 		sawValkeyRestart = sawValkeyRestart || strings.Contains(call, " restart valkey")
 	}
-	if !sawUp || !sawEdgeProbe || !sawPHPProbe || !sawValkeyProbe || !sawValkeyUser || !sawValkeyRestart {
+	if !sawUp || !sawNginxProbe || !sawPHPProbe || !sawValkeyProbe || !sawValkeyUser || !sawValkeyRestart {
 		t.Fatalf("missing lifecycle calls: %v", runner.calls)
 	}
 }
@@ -146,7 +146,7 @@ func TestUpPullUsesPullPolicy(t *testing.T) {
 		case call == "docker network inspect bridge":
 			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\n"), nil
+			return []byte("nginx\nphp\nvalkey\n"), nil
 		case strings.Contains(call, " exec -T "):
 			return nil, nil
 		default:
@@ -310,7 +310,7 @@ func TestUpRejectsWildcardValkeyListener(t *testing.T) {
 		case call == "docker network inspect bridge":
 			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\n"), nil
+			return []byte("nginx\nphp\nvalkey\n"), nil
 		case strings.Contains(call, " exec -T "):
 			return nil, nil
 		default:
@@ -365,7 +365,7 @@ func TestDBUseSwitchesRunningDatabase(t *testing.T) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		switch {
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\nmysql\n"), nil
+			return []byte("nginx\nphp\nvalkey\nmysql\n"), nil
 		default:
 			return nil, nil
 		}
@@ -402,7 +402,7 @@ func TestDBUseRollsBackOnStartFailure(t *testing.T) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		switch {
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\nmysql\n"), nil
+			return []byte("nginx\nphp\nvalkey\nmysql\n"), nil
 		case strings.Contains(call, "--profile postgres up -d --wait --wait-timeout 300 postgres"):
 			return nil, errors.New("postgres failed")
 		default:
@@ -467,9 +467,9 @@ func TestBackupStopsAndRestartsRunningStack(t *testing.T) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		switch {
 		case strings.Contains(call, " ps --all --format "):
-			return []byte("webdock-edge\trunning\n"), nil
+			return []byte("webdock-nginx\trunning\n"), nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\n"), nil
+			return []byte("nginx\nphp\nvalkey\n"), nil
 		case strings.Contains(call, " exec -T "):
 			return nil, nil
 		default:
@@ -547,7 +547,7 @@ func TestRestoreWithoutForceDoesNotStopRunningStack(t *testing.T) {
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		if strings.Contains(call, " ps --all --format ") {
-			return []byte("webdock-edge\trunning\n"), nil
+			return []byte("webdock-nginx\trunning\n"), nil
 		}
 		return nil, nil
 	}}
@@ -586,7 +586,7 @@ func TestRestoreRefusesRunningContainersWithBrokenConfig(t *testing.T) {
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		if strings.Contains(call, " ps --all --format ") {
-			return []byte("webdock-edge\trunning\n"), nil
+			return []byte("webdock-nginx\trunning\n"), nil
 		}
 		return nil, nil
 	}}
@@ -618,11 +618,11 @@ func TestRestoreStopsAndRestartsRunningStack(t *testing.T) {
 		case strings.Contains(call, " ps --all --format "):
 			psFormatCalls++
 			if psFormatCalls == 1 {
-				return []byte("webdock-edge\trunning\n"), nil
+				return []byte("webdock-nginx\trunning\n"), nil
 			}
 			return nil, nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("edge\nphp\nvalkey\n"), nil
+			return []byte("nginx\nphp\nvalkey\n"), nil
 		case call == "docker network inspect bridge":
 			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
 		default:

@@ -8,7 +8,7 @@
 
 Webdock 由一个轻量 Go CLI、一个生成的 Compose 实例和三个核心服务组成：
 
-- `edge`：Nginx 1.26 + Nginx UI，s6-overlay 管理两个进程。
+- `nginx`：Nginx 1.26 + Nginx UI，s6-overlay 管理两个进程。
 - `php`：PHP 8.4 FPM。
 - `valkey`：Valkey 8。
 - 可选 `mysql` 8.4 或 `postgres` 18。
@@ -16,7 +16,7 @@ Webdock 由一个轻量 Go CLI、一个生成的 Compose 实例和三个核心�
 设计原则：
 
 - 单机、Linux host 网络、固定端口、固定容器名。
-- 使用官方镜像作为数据库和 Valkey 基础；只自建 edge 和 php。
+- 使用官方镜像作为数据库和 Valkey 基础；只自建 nginx 和 php。
 - Nginx 配置由用户和 Nginx UI 管理，Webdock 只负责首次落地基线。
 - 数据与配置目录可整体迁移。
 - 不在低配机器上要求每次启动重新构建镜像。
@@ -49,13 +49,13 @@ Webdock 由一个轻量 Go CLI、一个生成的 Compose 实例和三个核心�
 自建镜像发布到 Docker Hub：
 
 ```text
-hicasper/webdock-edge:latest
-hicasper/webdock-php:8.4
+hicasper/webdock:nginx-1.26
+hicasper/webdock:php-8.4
 ```
 
 不锁 digest，不要求补丁版本恒定。`latest` 和 `8.4` 可在同一大版本线内更新；跨大版本必须修改模板并人工迁移。
 
-CI 构建 edge 时固定具体的 Nginx UI 和 s6-overlay 发布版本，并校验下载文件；用户侧不维护 digest 锁文件。
+CI 构建 nginx 镜像时固定具体的 Nginx UI 和 s6-overlay 发布版本，并校验下载文件；用户侧不维护 digest 锁文件。
 
 ## 4. 网络与端口
 
@@ -149,7 +149,7 @@ user webdock on ><generated-password> ~* &* +@all
 
 ## 6. Nginx 基线
 
-edge 使用 Debian trixie slim、Debian Nginx 1.26、Nginx UI 2.9.1 和 s6-overlay。
+nginx 使用 Debian trixie slim、Debian Nginx 1.26、Nginx UI 2.9.1 和 s6-overlay。
 
 配置位于标准位置：
 
@@ -300,7 +300,7 @@ JWT 和加密密钥由 `webdock.env` 生成并固定。UI 数据挂载到 `data/
 
 不自定义 Nginx UI 的 reload/restart 实现，不替换它的 Nginx 测试命令，也不挂 Docker socket。Nginx UI 使用自身官方容器模式管理 Nginx；s6-overlay 只负责进程守护。Nginx 配置损坏时 UI 仍可通过 SSH 隧道访问。
 
-Nginx UI 自身升级随 edge 镜像进行，不使用应用内 OTA。
+Nginx UI 自身升级随 nginx 镜像进行，不使用应用内 OTA。
 
 ### 6.5 Nginx 日志
 
@@ -421,14 +421,14 @@ network_mode: host
 固定容器名：
 
 ```text
-webdock-edge
+webdock-nginx
 webdock-php
 webdock-valkey
 webdock-mysql
 webdock-postgres
 ```
 
-所有长驻服务提供健康检查。edge 不挂 Docker socket。
+所有长驻服务提供健康检查。nginx 不挂 Docker socket。
 
 日志公共配置：
 
@@ -506,7 +506,7 @@ templates/
 ├── php/
 └── valkey/
 images/
-├── edge/
+├── nginx/
 └── php/
 tests/
 docs/
@@ -583,7 +583,7 @@ docs/
 
 - Go CLI、`init`、实例目录和 `webdock.env`。
 - Compose 渲染、路径参数化。
-- edge、php、valkey。
+- nginx、php、valkey。
 - Nginx 配置复制、Nginx UI 9001。
 - bridge gateway 探测。
 - `up/down/restart/status/logs/shell/ui/doctor`。

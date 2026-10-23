@@ -7,7 +7,7 @@ ARG NGINX_UI_SHA256_AMD64=8caa38db01a1b97b742c07015d0e19269c2cd13fdcd08aa9e948a5
 ARG NGINX_UI_SHA256_ARM64=efe481a5842c0f6583fb1ef7229b6d9eb0a5b03d17fdcd3612287ff0c1e1061f
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends binutils ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in \
@@ -21,7 +21,11 @@ RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     && sha256sum -c /tmp/nginx-ui.sha256 \
     && mkdir -p /out \
     && tar -xzf /tmp/nginx-ui.tar.gz -C /out \
-    && test -x /out/nginx-ui
+    && test -x /out/nginx-ui \
+    && strip --strip-unneeded /out/nginx-ui \
+    && /out/nginx-ui --version \
+    && apt-get purge -y --auto-remove binutils \
+    && rm -rf /var/lib/apt/lists/*
 
 FROM debian:trixie-slim AS s6
 ARG TARGETARCH
@@ -46,6 +50,11 @@ RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     && mkdir -p /out \
     && tar -C /out -Jxpf s6-overlay-noarch.tar.xz \
     && tar -C /out -Jxpf "s6-overlay-${S6_ARCH}.tar.xz"
+
+FROM scratch AS runtime-files
+COPY --from=s6 /out/ /
+COPY --from=nginx-ui /out/nginx-ui /usr/local/bin/nginx-ui
+COPY rootfs/ /
 
 FROM debian:trixie-slim
 ARG DEBIAN_FRONTEND=noninteractive
@@ -72,16 +81,11 @@ RUN apt-get update \
         libnginx-mod-rtmp \
         libnginx-mod-stream \
         libnginx-mod-stream-geoip2 \
+    && mkdir -p /etc/nginx-ui /var/log/nginx \
+    && touch /var/log/nginx/access.log /var/log/nginx/error.log \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=s6 /out/ /
-COPY --from=nginx-ui /out/nginx-ui /usr/local/bin/nginx-ui
-COPY rootfs/ /
-RUN chmod +x \
-        /etc/s6-overlay/s6-rc.d/nginx/run \
-        /etc/s6-overlay/s6-rc.d/nginx-ui/run \
-    && mkdir -p /etc/nginx-ui /var/log/nginx \
-    && touch /var/log/nginx/access.log /var/log/nginx/error.log
+COPY --from=runtime-files / /
 
 EXPOSE 80 443 9001
 ENTRYPOINT ["/init"]

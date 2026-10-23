@@ -51,7 +51,7 @@ jobs:
         run: go build -trimpath -o bin/webdock ./cmd/webdock
 
   images:
-    name: ${{ matrix.image }}
+    name: ${{ matrix.component }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: test
@@ -62,14 +62,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: webdock-edge
-            context: images/edge
-            dockerfile: images/edge/Dockerfile
-            tag: latest
-          - image: webdock-php
+          - component: nginx
+            context: images/nginx
+            dockerfile: images/nginx/Dockerfile
+            tag: nginx-1.26
+          - component: php
             context: images/php
             dockerfile: images/php/Dockerfile
-            tag: "8.4"
+            tag: php-8.4
     env:
       # Keep GHCR disabled by default. Set the repository variable
       # PUBLISH_GHCR=true and enable package write access before using it.
@@ -103,24 +103,30 @@ jobs:
         id: meta
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          IMAGE: ${{ matrix.image }}
+          COMPONENT: ${{ matrix.component }}
           DEFAULT_TAG: ${{ matrix.tag }}
         run: |
           set -euo pipefail
           owner="${DOCKERHUB_USERNAME:-hicasper}"
           owner="${owner,,}"
-          tags="${owner}/${IMAGE}:${DEFAULT_TAG}"
-          tags+=",${owner}/${IMAGE}:sha-${GITHUB_SHA::12}"
+          image="${owner}/webdock"
+          tags="${image}:${DEFAULT_TAG}"
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            ref_tag="${GITHUB_REF_NAME//\//-}"
-            tags+=",${owner}/${IMAGE}:${ref_tag}"
-          fi
+          # Commit-scoped tags are intentionally disabled while the project is unstable.
+          # tags+=",${image}:${COMPONENT}-sha-${GITHUB_SHA::12}"
+
+          # Versioned Docker tags are intentionally disabled until releases stabilize.
+          # if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          #   ref_tag="${GITHUB_REF_NAME//\//-}"
+          #   tags+=",${image}:${COMPONENT}-${ref_tag}"
+          # fi
 
           if [[ "${PUBLISH_GHCR}" == "true" ]]; then
             ghcr_owner="${GITHUB_REPOSITORY_OWNER,,}"
-            tags+=",ghcr.io/${ghcr_owner}/${IMAGE}:${DEFAULT_TAG}"
-            tags+=",ghcr.io/${ghcr_owner}/${IMAGE}:sha-${GITHUB_SHA::12}"
+            ghcr_image="ghcr.io/${ghcr_owner}/webdock"
+            tags+=",${ghcr_image}:${DEFAULT_TAG}"
+            # Commit-scoped tags are intentionally disabled while the project is unstable.
+            # tags+=",${ghcr_image}:${COMPONENT}-sha-${GITHUB_SHA::12}"
           fi
 
           echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
@@ -136,6 +142,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=${{ matrix.image }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+            org.opencontainers.image.title=webdock-${{ matrix.component }}
+          cache-from: type=gha,scope=webdock-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=webdock-${{ matrix.component }}

@@ -15,7 +15,7 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 ## 不可随意改变的约束
 
 - 仅支持 Linux、rootful Docker Engine 和 Docker Compose v2。
-- 固定容器名为 `webdock-edge`、`webdock-php`、`webdock-valkey`、`webdock-mysql`、`webdock-postgres`。这些名称参与恢复前的运行态检测，修改时必须同步 `internal/app/runtime.go`、Compose 模板、测试和文档。
+- 固定容器名为 `webdock-nginx`、`webdock-php`、`webdock-valkey`、`webdock-mysql`、`webdock-postgres`。这些名称参与恢复前的运行态检测，修改时必须同步 `internal/app/runtime.go`、Compose 模板、测试和文档。
 - 所有服务使用 `network_mode: host` 和 `restart: unless-stopped`。
 - Nginx 对外监听 80/443；PHP-FPM 监听 `127.0.0.1:9000`；Nginx UI 监听 `127.0.0.1:9001`；MySQL/PostgreSQL 只监听回环地址。
 - Valkey 只能监听 `127.0.0.1` 和经本地接口验证过的 IPv4 Docker bridge 网关，绝不能退化到 `0.0.0.0`。
@@ -23,7 +23,7 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 - `webdock.env` 必须是普通文件且权限为 `0600`。任何新凭据都不得写入日志、进程参数或 Compose 的明文命令参数。
 - 默认备份包含 `webdock.env`、`config/`、`data/`；`sites/` 和 `logs/` 只在显式选项下包含。恢复必须先在临时目录完成校验，再替换现有数据。
 - 归档恢复可以保留实例内部的相对软链接，但必须拒绝绝对路径、越界目标、重复 entry，以及通过软链接父目录继续写入。
-- 镜像标签只保证大版本兼容，不锁 digest。当前发布标签为 `hicasper/webdock-edge:latest` 和 `hicasper/webdock-php:8.4`。
+- 镜像标签只保证大版本兼容，不锁 digest。Nginx 与 PHP 发布到同一个仓库，当前稳定标签为 `hicasper/webdock:nginx-1.26` 和 `hicasper/webdock:php-8.4`；开发阶段直接覆盖这两个标签，不发布 commit 或 Git tag 版本化镜像。
 - 不提交 `runner-info.test`、`runner-key.test` 或其他 `runner-*.test` 文件；它们可能包含真实 runner 的访问信息。
 - 项目在 1.0 前使用 `0.x.y` 版本号；唯一版本源是 `cmd/webdock/VERSION`，Release tag 由它生成。
 
@@ -43,7 +43,7 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 ├── internal/network/        # Docker bridge 网关发现和本机地址验证
 ├── internal/render/         # 模板渲染和原子文件替换
 ├── templates/               # 嵌入二进制的 Compose、Nginx、PHP、MySQL、Valkey 模板
-├── images/edge/             # Nginx + Nginx UI + 动态模块镜像
+├── images/nginx/            # Nginx + Nginx UI + 动态模块镜像
 ├── images/php/              # PHP 8.4 FPM + 扩展 + Composer 镜像
 ├── tests/                   # 跨镜像静态契约测试
 ├── docs/                    # 预留设计文档目录；不要用运行数据填充
@@ -121,12 +121,13 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 
 实例布局、模板路径或默认值变化时，至少检查 `internal/instance/init.go`、`internal/instance/validate.go`、`internal/render/render_test.go` 和 `tests/images_test.go`。
 
-### `images/edge`
+### `images/nginx`
 
 基础为 `debian:trixie-slim`。一个构建阶段下载并校验 Nginx UI 发布包，另一个阶段安装 s6-overlay，最终阶段安装 Debian 提供的 Nginx 1.26 系列和动态模块。
 
 - Nginx UI 默认版本和 SHA256 位于 Dockerfile 的 `ARG`；升级时同时更新 amd64/arm64 哈希和 `tests/images_test.go` 中相关契约。
 - `rootfs/etc/s6-overlay/` 中定义 Nginx 与 Nginx UI 两个长期服务；Nginx 使用 `daemon off`，Nginx UI 以 `umask 077` 启动并收紧持久文件权限。
+- Nginx UI 在构建阶段使用 `strip --strip-unneeded` 去除 Go 符号表，并在同一阶段执行版本冒烟测试后卸载 `binutils`；不要把构建工具带进最终镜像。
 - `rootfs/etc/logrotate.d/nginx` 负责容器内 Nginx 日志轮转。
 - 不要默认启动所有动态模块。默认启用 GeoIP2、Stream、Stream-GeoIP2，RTMP 等模块保留在 `modules-available/`。
 - Nginx UI 的端口、工作目录和 Nginx 配置目录由 Compose 环境变量传入；不要重新设计其内部配置。
@@ -135,11 +136,11 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 
 基础为官方 `php:8.4-fpm-trixie`。只通过 `mlocati/php-extension-installer` 安装扩展，不手写编译流程；Composer 从官方 Composer 镜像复制。
 
-`images/php/php.ini` 与 `templates/php/php.ini` 必须保持同步，`TestPHPIniTemplatesStayInSync` 会检查。`fpm.conf` 只保留必要覆盖，不要让实例配置意外覆盖官方 FPM 环境变量行为。当前动态池保持 5 个空闲 worker，并将 `pm.max_children` 上限设为 20；20 是突发上限而不是 20 个重型 PHP 请求的资源保证，调整前要同时考虑宿主机内存和单请求实际占用。
+PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose 挂载生效；镜像内不要再复制第二份，也不要为 `composer --version`增加单独构建层。`fpm.conf` 只保留必要覆盖，不要让实例配置意外覆盖官方 FPM 环境变量行为。当前动态池保持 5 个空闲 worker，并将 `pm.max_children` 上限设为 20；20 是突发上限而不是 20 个重型 PHP 请求的资源保证，调整前要同时考虑宿主机内存和单请求实际占用。
 
 ### `tests`
 
-`images_test.go` 是不需要 Docker daemon 的契约测试，覆盖镜像组件、PHP 扩展、Nginx 基线、健康检查不泄漏密码、配置文件同步等。修改镜像或模板时要先扩展这些测试，再实现变更。
+`images_test.go` 是不需要 Docker daemon 的契约测试，覆盖镜像组件、PHP 扩展、Nginx 基线、健康检查不泄漏密码、PHP 配置单一来源等。修改镜像或模板时要先扩展这些测试，再实现变更。
 
 真实 Docker 集成测试需要 Linux runner；本地通过 `runner-info.test` 连接的 runner 只能作为人工验证环境，不能把凭据或 runner 文件带回仓库。
 
@@ -150,7 +151,8 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 1. Go 测试在 Linux 上执行格式检查、`go test`、race、vet 和构建。
 2. Docker 构建使用 Buildx + QEMU；PR 只构建 amd64，master/main 或 tag 发布时构建 amd64/arm64。
 3. Docker Hub 登录使用 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` secrets。
-4. GHCR 发布代码保留但默认关闭，由工作流中的 `PUBLISH_GHCR` 变量控制；启用前需确认仓库 `GITHUB_TOKEN` 有 `packages: write` 权限，并将变量设为 `true`。
+4. Nginx 与 PHP 发布到同一个 `webdock` 仓库，只覆盖 `nginx-1.26` 和 `php-8.4`；开发阶段不发布 commit 或 Git tag 版本化镜像，相关标签代码保留为注释。
+5. GHCR 发布代码保留但默认关闭，由工作流中的 `PUBLISH_GHCR` 变量控制；启用前需确认仓库 `GITHUB_TOKEN` 有 `packages: write` 权限，并将变量设为 `true`。
 
 `release-binaries.yml` 负责 CLI 二进制发布：
 
@@ -243,8 +245,8 @@ go build -trimpath -o bin/webdock ./cmd/webdock
 涉及 Dockerfile 或模板时额外执行：
 
 ```bash
-docker build -t webdock-edge:test images/edge
-docker build -t webdock-php:test images/php
+docker build -t webdock:nginx-test images/nginx
+docker build -t webdock:php-test images/php
 ```
 
 具备真实 Docker 环境时再执行：

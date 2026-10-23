@@ -54,9 +54,9 @@ func TestComposeUsesFixedNamesAndHostNetwork(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"image: hicasper/webdock-edge:latest",
-		"image: hicasper/webdock-php:8.4",
-		"container_name: webdock-edge",
+		"image: hicasper/webdock:nginx-1.26",
+		"image: hicasper/webdock:php-8.4",
+		"container_name: webdock-nginx",
 		"network_mode: host",
 		"restart: unless-stopped",
 		"max-size: 10m",

@@ -103,7 +103,7 @@ func (a *App) verifyRuntime(ctx context.Context, cfg instance.Config, profiles [
 }
 
 func (a *App) verifyRunning(ctx context.Context, cfg instance.Config, running map[string]bool) error {
-	required := []string{"edge", "php", "valkey"}
+	required := []string{"nginx", "php", "valkey"}
 	if cfg.DBEngine() != "none" {
 		required = append(required, cfg.DBEngine())
 	}
@@ -142,8 +142,8 @@ func (a *App) probeService(ctx context.Context, cfg instance.Config, service str
 	compose := a.compose(cfg)
 	var args []string
 	switch service {
-	case "edge":
-		args = []string{"exec", "-T", "edge", "nginx", "-t"}
+	case "nginx":
+		args = []string{"exec", "-T", "nginx", "nginx", "-t"}
 	case "php":
 		args = []string{"exec", "-T", "php", "php-fpm", "-t"}
 	case "valkey":
@@ -212,7 +212,7 @@ func (a *App) projectContainersRunning(ctx context.Context) (bool, error) {
 
 func isWebdockContainer(name string) bool {
 	switch name {
-	case "webdock-edge", "webdock-php", "webdock-valkey", "webdock-mysql", "webdock-postgres":
+	case "webdock-nginx", "webdock-php", "webdock-valkey", "webdock-mysql", "webdock-postgres":
 		return true
 	default:
 		return false
@@ -221,10 +221,10 @@ func isWebdockContainer(name string) bool {
 
 func (a *App) listenerRules(cfg instance.Config, running map[string]bool) (map[int]doctor.Rule, error) {
 	rules := map[int]doctor.Rule{
-		80:   {Name: "Nginx HTTP", Required: running["edge"], AllowWildcard: true},
-		443:  {Name: "Nginx HTTPS", Required: running["edge"], AllowWildcard: true},
+		80:   {Name: "Nginx HTTP", Required: running["nginx"], AllowWildcard: true},
+		443:  {Name: "Nginx HTTPS", Required: running["nginx"], AllowWildcard: true},
 		9000: {Name: "PHP-FPM", Required: running["php"]},
-		9001: {Name: "Nginx UI", Required: running["edge"]},
+		9001: {Name: "Nginx UI", Required: running["nginx"]},
 	}
 	if running["valkey"] {
 		allowed, err := valkeyBindAddresses(filepath.Join(cfg.Root, "config", "valkey", "valkey.conf"))

@@ -2,6 +2,15 @@
 
 本项目的重要变更、设计调整和验证记录集中记录在这里。格式参考 Keep a Changelog；项目在 1.0 前使用 `0.x.y` 版本号。
 
+## [Unreleased]
+
+### Changed
+
+- 将 `edge` 服务、容器、镜像目录和 CLI 服务名统一改为 `nginx`，容器名变为 `webdock-nginx`。
+- Nginx 与 PHP 镜像集中发布到同一个 `hicasper/webdock` 仓库，标签分别为 `nginx-1.26` 和 `php-8.4`；开发阶段直接覆盖，不发布 commit 或 Git tag 版本化标签。
+- Nginx UI 在构建阶段执行 `strip --strip-unneeded` 并立即冒烟测试，随后卸载构建工具；合并最终运行文件 COPY 层。
+- 删除 PHP 镜像中重复的 `php.ini` 和单独的 `composer --version` 构建层，PHP 配置只保留实例模板这一份来源。
+
 ## [0.1.0] - 2026-10-22
 
 ### Added

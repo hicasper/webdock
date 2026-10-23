@@ -17,13 +17,13 @@ Webdock 是一个面向单机 Linux 的轻量 Docker Compose 容器栈管理工�
 
 | 服务 | 当前系列 | 说明 |
 | --- | --- | --- |
-| `edge` | Nginx 1.26 LTS 系列、Nginx UI 2.x | HTTP/HTTPS、配置管理和常用动态模块 |
+| `nginx` | Nginx 1.26 LTS 系列、Nginx UI 2.x | HTTP/HTTPS、配置管理和常用动态模块 |
 | `php` | PHP 8.4 系列 | PHP-FPM、Composer 和常用扩展 |
 | `valkey` | Valkey 8.x | 缓存、AOF 持久化和 ACL 认证 |
 | `mysql` | MySQL 8.4 LTS 系列 | 可选数据库 |
 | `postgres` | PostgreSQL 18.x | 可选数据库 |
 
-镜像按主版本或稳定系列维护，升级时以兼容当前实例目录为前提。
+Nginx 与 PHP 镜像统一发布在 [hicasper/webdock](https://hub.docker.com/r/hicasper/webdock)，按组件和主版本维护；升级时以兼容当前实例目录为前提。
 
 ## 环境要求
 

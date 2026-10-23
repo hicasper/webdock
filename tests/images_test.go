@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func TestEdgeImageIncludesRequestedComponents(t *testing.T) {
-	text := read(t, "../images/edge/Dockerfile")
+func TestNginxImageIncludesRequestedComponents(t *testing.T) {
+	text := read(t, "../images/nginx/Dockerfile")
 	for _, want := range []string{
 		"FROM debian:trixie-slim",
 		"ARG S6_OVERLAY_VERSION=",
@@ -23,14 +23,20 @@ func TestEdgeImageIncludesRequestedComponents(t *testing.T) {
 		"libnginx-mod-rtmp",
 		"libnginx-mod-http-lua",
 		"logrotate",
+		"binutils",
+		"strip --strip-unneeded /out/nginx-ui",
+		"/out/nginx-ui --version",
+		"apt-get purge -y --auto-remove binutils",
+		"FROM scratch AS runtime-files",
+		"COPY --from=runtime-files / /",
 		"ENTRYPOINT [\"/init\"]",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("edge Dockerfile missing %q", want)
+			t.Errorf("nginx Dockerfile missing %q", want)
 		}
 	}
 	if strings.Contains(strings.ToLower(text), "alpine") {
-		t.Fatal("edge image must not use Alpine")
+		t.Fatal("nginx image must not use Alpine")
 	}
 }
 
@@ -42,7 +48,7 @@ func TestLuaModuleHasNDKDependency(t *testing.T) {
 }
 
 func TestNginxUIRunProtectsPersistentSecrets(t *testing.T) {
-	text := read(t, "../images/edge/rootfs/etc/s6-overlay/s6-rc.d/nginx-ui/run")
+	text := read(t, "../images/nginx/rootfs/etc/s6-overlay/s6-rc.d/nginx-ui/run")
 	for _, want := range []string{
 		"umask 077",
 		"chmod 700 /etc/nginx-ui",
@@ -84,6 +90,12 @@ func TestPHPImageExtensions(t *testing.T) {
 	if strings.Contains(strings.ToLower(text), "alpine") {
 		t.Fatal("PHP image must not use Alpine")
 	}
+	if strings.Contains(text, "RUN composer --version") {
+		t.Fatal("PHP image must not add a separate composer version layer")
+	}
+	if strings.Contains(text, "php.ini") {
+		t.Fatal("PHP ini must come from the mounted instance template")
+	}
 }
 
 func TestPHPFPMDirectivesUseCorrectSections(t *testing.T) {
@@ -116,14 +128,14 @@ func TestPHPFPMDirectivesUseCorrectSections(t *testing.T) {
 	}
 }
 
-func TestPHPIniTemplatesStayInSync(t *testing.T) {
-	image := read(t, "../images/php/php.ini")
-	instanceTemplate := read(t, "../templates/php/php.ini")
-	if image != instanceTemplate {
-		t.Fatal("images/php/php.ini and templates/php/php.ini differ")
+func TestPHPIniHasSingleInstanceTemplate(t *testing.T) {
+	compose := read(t, "../templates/compose/compose.yaml.tmpl")
+	if !strings.Contains(compose, "./config/php/php.ini:/usr/local/etc/php/conf.d/zz-webdock.ini:ro") {
+		t.Fatal("Compose must mount the instance php.ini")
 	}
+	instanceTemplate := read(t, "../templates/php/php.ini")
 	for _, want := range []string{"display_errors = Off", "display_startup_errors = Off", "log_errors = On"} {
-		if !strings.Contains(image, want) {
+		if !strings.Contains(instanceTemplate, want) {
 			t.Errorf("PHP ini missing %q", want)
 		}
 	}

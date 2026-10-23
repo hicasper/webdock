@@ -18,8 +18,6 @@ RUN install-php-extensions \
     && rm -f /usr/local/bin/install-php-extensions
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
-COPY php.ini /usr/local/etc/php/conf.d/zz-webdock.ini
 COPY fpm.conf /usr/local/etc/php-fpm.d/zz-webdock.conf
 
-RUN composer --version
 EXPOSE 9000

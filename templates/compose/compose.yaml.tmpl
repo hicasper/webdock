@@ -7,9 +7,9 @@ x-logging: &default-logging
     max-file: "2"
 
 services:
-  edge:
-    image: hicasper/webdock-edge:latest
-    container_name: webdock-edge
+  nginx:
+    image: hicasper/webdock:nginx-1.26
+    container_name: webdock-nginx
     restart: unless-stopped
     network_mode: host
     environment:
@@ -38,7 +38,7 @@ services:
     logging: *default-logging
 
   php:
-    image: hicasper/webdock-php:8.4
+    image: hicasper/webdock:php-8.4
     container_name: webdock-php
     restart: unless-stopped
     network_mode: host

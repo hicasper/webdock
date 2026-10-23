@@ -61,7 +61,7 @@ func (a *App) cmdUI(cfg instance.Config) error {
 
 func validService(service string) bool {
 	switch service {
-	case "edge", "php", "valkey", "mysql", "postgres":
+	case "nginx", "php", "valkey", "mysql", "postgres":
 		return true
 	default:
 		return false
