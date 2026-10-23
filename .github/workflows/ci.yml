@@ -1,19 +1,75 @@
-name: CI/CD
-
+name: CI
 on:
   pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "cmd/webdock/VERSION"
+      - "templates/**"
+      - "images/**"
+      - ".github/workflows/**"
   push:
     branches:
       - master
       - main
-    tags:
-      - "v*"
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "cmd/webdock/VERSION"
+      - "templates/**"
+      - "images/**"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect image changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Detect changed components
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            nginx:
+              - "images/nginx/**"
+            php:
+              - "images/php/**"
+
+      - name: Build image matrix
+        id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          NGINX_CHANGED: ${{ steps.filter.outputs.nginx }}
+          PHP_CHANGED: ${{ steps.filter.outputs.php }}
+        run: |
+          set -euo pipefail
+          images='[]'
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${NGINX_CHANGED}" == "true" ]]; then
+            images="$(jq -c '. + [{"component":"nginx","context":"images/nginx","dockerfile":"images/nginx/Dockerfile","tag":"nginx-1.26"}]' <<<"${images}")"
+          fi
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${PHP_CHANGED}" == "true" ]]; then
+            images="$(jq -c '. + [{"component":"php","context":"images/php","dockerfile":"images/php/Dockerfile","tag":"php-8.4"}]' <<<"${images}")"
+          fi
+
+          echo "images=${images}" >> "${GITHUB_OUTPUT}"
+
   test:
     name: Go checks
     runs-on: ubuntu-latest
@@ -54,22 +110,17 @@ jobs:
     name: ${{ matrix.component }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    needs: test
+    needs:
+      - test
+      - changes
+    if: needs.changes.outputs.images != '[]'
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - component: nginx
-            context: images/nginx
-            dockerfile: images/nginx/Dockerfile
-            tag: nginx-1.26
-          - component: php
-            context: images/php
-            dockerfile: images/php/Dockerfile
-            tag: php-8.4
+        include: ${{ fromJSON(needs.changes.outputs.images) }}
     env:
       # Keep GHCR disabled by default. Set the repository variable
       # PUBLISH_GHCR=true and enable package write access before using it.
@@ -79,6 +130,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up QEMU
+        if: github.event_name != 'pull_request'
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx

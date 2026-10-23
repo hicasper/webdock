@@ -12,6 +12,7 @@
 - 删除 PHP 镜像中重复的 `php.ini` 和单独的 `composer --version` 构建层，PHP 配置只保留实例模板这一份来源。
 - Nginx 镜像显式选择 `anacron` 满足 `logrotate` 的调度器依赖，避免引入并保留未运行的 `cron` 和 `systemd` 依赖链。
 - s6 服务注册迁移到标准 `user-bundles.d/user/contents.d/` 空文件布局，移除对旧 `s6-rc.d/user` 兼容路径的依赖。
+- CI 增加路径过滤和镜像变更检测：文档等无关改动不触发 workflow，只有对应镜像目录变化时才重建 Nginx/PHP 镜像；二进制 Release 只响应运行时代码、模板和 Go 依赖变化。
 
 ## [0.1.0] - 2026-10-22
 
@@ -46,6 +47,7 @@
 
 ### Fixed
 
+- 移除 MySQL 的 `log_error = stderr` 覆盖；该值会在数据目录生成 `stderr.err`。现在保持官方镜像默认 stderr 日志，日志由 Docker 管理且不会混入持久数据。
 - 修复 Valkey 8.0 健康检查认证变量兼容问题，统一使用 `REDISCLI_AUTH`。
 - 修复 MySQL、Valkey 健康检查将密码放入进程参数的问题，改为容器内环境变量传递。
 - 修复 PHP 配置覆盖官方 FPM 行为的问题，删除不必要的 `clear_env` 修改，并在实例 `php.ini` 中显式关闭错误回显、开启错误日志。

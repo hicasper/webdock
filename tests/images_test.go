@@ -214,10 +214,10 @@ func TestComposeHealthchecksKeepPasswordsOutOfArguments(t *testing.T) {
 	}
 }
 
-func TestMySQLUsesContainerStderrLogging(t *testing.T) {
+func TestMySQLKeepsOfficialStderrLogging(t *testing.T) {
 	text := read(t, "../templates/mysql/my.cnf")
-	if !strings.Contains(text, "log_error = stderr") {
-		t.Fatal("MySQL should keep its error log on Docker stderr")
+	if strings.Contains(text, "log_error") {
+		t.Fatal("MySQL must not override log_error; log_error=stderr creates stderr.err in datadir")
 	}
 }
 

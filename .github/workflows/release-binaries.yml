@@ -6,12 +6,11 @@ on:
       - master
       - main
     paths:
-      - "**/*.go"
+      - "cmd/**"
+      - "internal/**"
       - "templates/**"
       - "go.mod"
       - "go.sum"
-      - "cmd/webdock/VERSION"
-      - ".github/workflows/release-binaries.yml"
   workflow_dispatch:
 
 permissions:

@@ -116,7 +116,7 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 - `templates/compose/compose.yaml.tmpl`：服务编排、端口、健康检查、日志和固定挂载。
 - `templates/nginx/`：全局配置、默认站点、Debian 支持文件、模块入口和 FastCGI snippet。
 - `templates/php/php.ini`：通过 `embed.FS` 注入实例 `config/php/php.ini`。
-- `templates/mysql/my.cnf`：实例 MySQL 配置。
+- `templates/mysql/my.cnf`：MySQL 的监听和禁用 mysqlx 配置。不要设置 `log_error = stderr`；MySQL 会把它当成数据目录下的 `stderr.err` 文件。保持官方镜像默认的 stderr 日志行为，避免日志进入数据备份。
 - `templates/valkey/valkey.conf.tmpl`：Valkey 运行时配置。
 
 实例布局、模板路径或默认值变化时，至少检查 `internal/instance/init.go`、`internal/instance/validate.go`、`internal/render/render_test.go` 和 `tests/images_test.go`。
@@ -148,15 +148,16 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 
 `ci.yml` 负责持续集成与容器发布：
 
-1. Go 测试在 Linux 上执行格式检查、`go test`、race、vet 和构建。
-2. Docker 构建使用 Buildx + QEMU；PR 只构建 amd64，master/main 或 tag 发布时构建 amd64/arm64。
-3. Docker Hub 登录使用 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` secrets。
-4. Nginx 与 PHP 发布到同一个 `webdock` 仓库，只覆盖 `nginx-1.26` 和 `php-8.4`；开发阶段不发布 commit 或 Git tag 版本化镜像，相关标签代码保留为注释。
-5. GHCR 发布代码保留但默认关闭，由工作流中的 `PUBLISH_GHCR` 变量控制；启用前需确认仓库 `GITHUB_TOKEN` 有 `packages: write` 权限，并将变量设为 `true`。
+1. 仅在 Go、模板、镜像或工作流文件变化时触发；纯文档、配置示例和其他无关文件的变化不启动 workflow。tag push 不触发镜像重新发布。
+2. `changes` job 检测 Nginx/PHP 镜像目录；矩阵只包含实际变化的镜像。手动触发时构建两个镜像。
+3. Go 测试在 Linux 上执行格式检查、`go test`、race、vet 和构建。
+4. Docker 构建使用 Buildx；只有非 PR 发布才启用 QEMU 和 arm64。PR 只构建 amd64 且不推送，master/main 推送构建 amd64/arm64 并覆盖基础标签。
+5. Docker Hub 登录使用 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` secrets。Nginx 与 PHP 发布到同一个 `webdock` 仓库，只覆盖 `nginx-1.26` 和 `php-8.4`；开发阶段不发布 commit 或 Git tag 版本化镜像。
+6. GHCR 发布代码保留但默认关闭，由工作流中的 `PUBLISH_GHCR` 变量控制；启用前需确认仓库 `GITHUB_TOKEN` 有 `packages: write` 权限，并将变量设为 `true`。
 
 `release-binaries.yml` 负责 CLI 二进制发布：
 
-1. 仅在 Go、模板、版本文件或工作流自身发生变化的 master/main 推送时触发，也支持手动触发。
+1. 仅在 `cmd/`、`internal/`、`templates/`、`go.mod` 或 `go.sum` 发生变化的 master/main 推送时触发，也支持手动触发。测试代码、文档、镜像和工作流自身变化不会重建二进制。
 2. 测试、race、vet 和 staticcheck 通过后，以 `CGO_ENABLED=0` 构建 Linux amd64/arm64 二进制并生成 SHA256 文件。
 3. 从 `cmd/webdock/VERSION` 得到 `v0.x.y` tag，创建或更新对应 Release。
 4. 同名二进制、校验文件和 `build-info.txt` 使用 GitHub CLI 的 `--clobber` 原地覆盖，不随每次提交累积资产。

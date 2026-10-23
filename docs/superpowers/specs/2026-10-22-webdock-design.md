@@ -402,7 +402,7 @@ instance/
 ```
 
 - `logs/` 独立于 `data/`，不进入默认备份。
-- 只有 Nginx 使用 `logs/nginx/`；PHP、Valkey、MySQL、PostgreSQL 和 Nginx UI 的日志由 Docker json-file 驱动管理。MySQL 显式使用 `log_error = stderr`，避免挂载配置后误写容器盘。
+- 只有 Nginx 使用 `logs/nginx/`；PHP、Valkey、MySQL、PostgreSQL 和 Nginx UI 的日志由 Docker json-file 驱动管理。MySQL 不覆盖 `log_error`，保持官方镜像默认的 stderr 行为；写成 `stderr` 会在数据目录产生 `stderr.err`，因此禁止设置该项。
 - Docker json-file 日志限制为 `max-size=10m`、`max-file=2`。
 - `webdock.env` 生成一次，后续命令不覆盖。
 - 数据库和 Valkey 数据始终保留。
