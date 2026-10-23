@@ -202,12 +202,12 @@ func TestNginxBaseline(t *testing.T) {
 
 func TestComposeHealthchecksKeepPasswordsOutOfArguments(t *testing.T) {
 	text := read(t, "../templates/compose/compose.yaml.tmpl")
-	for _, want := range []string{`REDISCLI_AUTH=\"$$VALKEY_PASSWORD\"`, `MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\"`} {
+	for _, want := range []string{`REDISCLI_AUTH=\"$$REDIS_PASSWORD\"`, `MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\"`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("compose healthcheck missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{`-a \"$$VALKEY_PASSWORD\"`, `-p\"$$MYSQL_ROOT_PASSWORD\"`} {
+	for _, forbidden := range []string{`-a \"$$REDIS_PASSWORD\"`, `-p\"$$MYSQL_ROOT_PASSWORD\"`} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("compose healthcheck exposes a password argument %q", forbidden)
 		}

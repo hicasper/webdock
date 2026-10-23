@@ -12,6 +12,18 @@ func (a *App) cmdStatus(ctx context.Context, cfg instance.Config) error {
 	if err := instance.ValidateLayout(cfg); err != nil {
 		return err
 	}
+	fmt.Fprintln(a.Stdout, "Components:")
+	for _, component := range cfg.Components {
+		state := "disabled"
+		if component.Enabled {
+			state = "enabled"
+		}
+		fmt.Fprintf(a.Stdout, "  %-8s %-8s", component.Name, state)
+		if component.Enabled {
+			fmt.Fprintf(a.Stdout, " %-8s %s", component.Version, component.Image)
+		}
+		fmt.Fprintln(a.Stdout)
+	}
 	out, err := a.compose(cfg).Output(ctx, docker.AllProfiles(), "ps")
 	if err != nil {
 		return err
@@ -25,12 +37,12 @@ func (a *App) cmdLogs(ctx context.Context, cfg instance.Config, args []string) e
 		return err
 	}
 	if len(args) > 1 {
-		return fmt.Errorf("logs accepts at most one service")
+		return fmt.Errorf("logs accepts at most one component")
 	}
 	command := []string{"logs", "--tail", "200", "--follow"}
 	if len(args) == 1 {
 		if !validService(args[0]) {
-			return fmt.Errorf("unknown service %q", args[0])
+			return fmt.Errorf("unknown component %q", args[0])
 		}
 		command = append(command, args[0])
 	}
@@ -42,10 +54,10 @@ func (a *App) cmdShell(ctx context.Context, cfg instance.Config, args []string) 
 		return err
 	}
 	if len(args) != 1 {
-		return fmt.Errorf("usage: webdock shell <service>")
+		return fmt.Errorf("usage: webdock shell <component>")
 	}
 	if !validService(args[0]) {
-		return fmt.Errorf("unknown service %q", args[0])
+		return fmt.Errorf("unknown component %q", args[0])
 	}
 	return a.compose(cfg).Attach(ctx, docker.AllProfiles(), a.Stdin, a.Stdout, a.Stderr, "exec", args[0], "sh")
 }
@@ -61,7 +73,7 @@ func (a *App) cmdUI(cfg instance.Config) error {
 
 func validService(service string) bool {
 	switch service {
-	case "nginx", "php", "valkey", "mysql", "postgres":
+	case "nginx", "php", "redis", "mysql", "postgres":
 		return true
 	default:
 		return false

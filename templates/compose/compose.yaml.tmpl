@@ -8,8 +8,9 @@ x-logging: &default-logging
 
 services:
   nginx:
-    image: hicasper/webdock:nginx-1.26
+    image: "{{.NginxImage}}"
     container_name: webdock-nginx
+    profiles: ["nginx"]
     restart: unless-stopped
     network_mode: host
     environment:
@@ -38,8 +39,9 @@ services:
     logging: *default-logging
 
   php:
-    image: hicasper/webdock:php-8.4
+    image: "{{.PHPImage}}"
     container_name: webdock-php
+    profiles: ["php"]
     restart: unless-stopped
     network_mode: host
     environment:
@@ -55,19 +57,20 @@ services:
       start_period: 20s
     logging: *default-logging
 
-  valkey:
-    image: valkey/valkey:8-trixie
-    container_name: webdock-valkey
+  redis:
+    image: "{{.RedisImage}}"
+    container_name: webdock-redis
+    profiles: ["redis"]
     restart: unless-stopped
     network_mode: host
     command: ["valkey-server", "/etc/valkey/valkey.conf"]
     environment:
-      VALKEY_PASSWORD: "${VALKEY_PASSWORD:?set by webdock init}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set by webdock init}"
     volumes:
-      - ./config/valkey:/etc/valkey:ro
-      - ./data/valkey:/data
+      - ./config/redis:/etc/valkey:ro
+      - ./data/redis:/data
     healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli -h 127.0.0.1 -p 6379 --user webdock ping | grep -q PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" valkey-cli -h 127.0.0.1 -p 6379 --user webdock ping | grep -q PONG"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -76,7 +79,7 @@ services:
     logging: *default-logging
 
   mysql:
-    image: mysql:8.4
+    image: "{{.MySQLImage}}"
     container_name: webdock-mysql
     restart: unless-stopped
     network_mode: host
@@ -100,7 +103,7 @@ services:
     logging: *default-logging
 
   postgres:
-    image: postgres:18
+    image: "{{.PostgresImage}}"
     container_name: webdock-postgres
     restart: unless-stopped
     network_mode: host

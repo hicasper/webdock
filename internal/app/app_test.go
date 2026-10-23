@@ -2,15 +2,16 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"webdock/internal/backup"
 	"webdock/internal/doctor"
@@ -19,272 +20,26 @@ import (
 
 type fakeRunner struct {
 	handle func(name string, args []string) ([]byte, error)
-	attach func(name string, args []string) error
+	attach func(name string, args []string, stdout, stderr io.Writer) error
 	calls  []string
 }
 
 func (f *fakeRunner) Output(_ context.Context, _ string, _ []string, name string, args ...string) ([]byte, error) {
 	call := strings.Join(append([]string{name}, args...), " ")
 	f.calls = append(f.calls, call)
+	if f.handle == nil {
+		return nil, nil
+	}
 	return f.handle(name, args)
 }
 
-func (f *fakeRunner) Attach(_ context.Context, _ string, _ []string, _ io.Reader, _ io.Writer, _ io.Writer, name string, args ...string) error {
+func (f *fakeRunner) Attach(_ context.Context, _ string, _ []string, _ io.Reader, stdout, stderr io.Writer, name string, args ...string) error {
 	call := strings.Join(append([]string{name}, args...), " ")
 	f.calls = append(f.calls, call)
-	if f.attach != nil {
-		return f.attach(name, args)
+	if f.attach == nil {
+		return nil
 	}
-	return nil
-}
-
-func TestRunInitWithGlobalDirectory(t *testing.T) {
-	root := t.TempDir()
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		if name == "docker" && len(args) >= 3 && args[0] == "network" && args[1] == "inspect" {
-			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
-		}
-		return nil, nil
-	}})
-	code := a.Run(context.Background(), []string{"-C=" + root, "init", "--db", "postgres"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "Initialized Webdock instance") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	cfg, err := instance.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DBEngine() != "postgres" {
-		t.Fatalf("DB engine = %q", cfg.DBEngine())
-	}
-}
-
-func TestRunVersion(t *testing.T) {
-	for _, arg := range []string{"version", "-v", "--version"} {
-		t.Run(arg, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			a := testApp(&stdout, &stderr, &fakeRunner{})
-			a.Version = "0.1.0"
-
-			code := a.Run(context.Background(), []string{arg})
-			if code != 0 {
-				t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-			}
-			if got, want := stdout.String(), "webdock 0.1.0\n"; got != want {
-				t.Fatalf("stdout = %q, want %q", got, want)
-			}
-		})
-	}
-}
-
-func TestUpRendersBridgeAndVerifiesServices(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		switch {
-		case call == "docker network inspect bridge":
-			return []byte(`[{"IPAM":{"Config":[{"Gateway":"172.17.0.1"}]}}]`), nil
-		case strings.Contains(call, " config --quiet"):
-			return nil, nil
-		case strings.Contains(call, " up -d --wait"):
-			return nil, nil
-		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\n"), nil
-		case strings.Contains(call, " exec -T "):
-			return nil, nil
-		case strings.Contains(call, " restart valkey"):
-			return nil, nil
-		default:
-			return nil, errors.New("unexpected command: " + call)
-		}
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "up"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "Webdock is up") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	valkey, err := os.ReadFile(filepath.Join(root, "config", "valkey", "valkey.conf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(valkey), "bind 127.0.0.1 172.17.0.1") {
-		t.Fatalf("Valkey config = %s", valkey)
-	}
-	var sawUp, sawNginxProbe, sawPHPProbe, sawValkeyProbe, sawValkeyUser, sawValkeyRestart bool
-	for _, call := range runner.calls {
-		sawUp = sawUp || strings.Contains(call, " up -d --wait")
-		sawNginxProbe = sawNginxProbe || strings.Contains(call, "exec -T nginx nginx -t")
-		sawPHPProbe = sawPHPProbe || strings.Contains(call, "exec -T php php-fpm -t")
-		sawValkeyProbe = sawValkeyProbe || strings.Contains(call, "exec -T valkey")
-		sawValkeyUser = sawValkeyUser || strings.Contains(call, "--user webdock")
-		sawValkeyRestart = sawValkeyRestart || strings.Contains(call, " restart valkey")
-	}
-	if !sawUp || !sawNginxProbe || !sawPHPProbe || !sawValkeyProbe || !sawValkeyUser || !sawValkeyRestart {
-		t.Fatalf("missing lifecycle calls: %v", runner.calls)
-	}
-}
-
-func TestUpPullUsesPullPolicy(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		switch {
-		case call == "docker network inspect bridge":
-			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
-		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\n"), nil
-		case strings.Contains(call, " exec -T "):
-			return nil, nil
-		default:
-			return nil, nil
-		}
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "up", "--pull"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	found := false
-	for _, call := range runner.calls {
-		if strings.Contains(call, "up -d --wait --wait-timeout 300 --pull always") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("pull policy missing: %v", runner.calls)
-	}
-}
-
-func TestUpFailureRestoresPreviousValkeyConfig(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	valkeyPath := filepath.Join(root, "config", "valkey", "valkey.conf")
-	before, err := os.ReadFile(valkeyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	networkCalls := 0
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		switch {
-		case call == "docker network inspect bridge":
-			networkCalls++
-			if networkCalls == 1 {
-				return []byte(`[{"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]`), nil
-			}
-			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
-		case strings.Contains(call, " up -d --wait"):
-			return nil, errors.New("port conflict")
-		default:
-			return nil, nil
-		}
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "up"})
-	if code == 0 {
-		t.Fatal("up unexpectedly succeeded")
-	}
-	after, err := os.ReadFile(valkeyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(after), "bind 127.0.0.1\n") || strings.Contains(string(after), "172.18.0.1") {
-		t.Fatalf("Valkey config did not fall back to loopback\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-func TestDoctorAllowsStoppedStack(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		if strings.Contains(call, " ps --status running --services") {
-			return nil, nil
-		}
-		return nil, nil
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "doctor"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "stack is stopped") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-}
-
-func TestLogsAndShellUseAttach(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(string, []string) ([]byte, error) { return nil, nil }}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	if code := a.Run(context.Background(), []string{"-C", root, "logs", "php"}); code != 0 {
-		t.Fatalf("logs exit = %d, stderr = %s", code, stderr.String())
-	}
-	if code := a.Run(context.Background(), []string{"-C", root, "shell", "php"}); code != 0 {
-		t.Fatalf("shell exit = %d, stderr = %s", code, stderr.String())
-	}
-	var sawLogs, sawShell bool
-	for _, call := range runner.calls {
-		sawLogs = sawLogs || strings.Contains(call, "logs --tail 200 --follow php")
-		sawShell = sawShell || strings.Contains(call, "exec php sh")
-	}
-	if !sawLogs || !sawShell {
-		t.Fatalf("attach calls missing: %v", runner.calls)
-	}
-}
-
-func TestProjectContainersRunningRecognizesFixedNames(t *testing.T) {
-	runner := &fakeRunner{handle: func(_ string, _ []string) ([]byte, error) {
-		return []byte("unrelated\trunning\nwebdock-php\tpaused\n"), nil
-	}}
-	a := &App{Runner: runner}
-	running, err := a.projectContainersRunning(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !running {
-		t.Fatal("projectContainersRunning() = false, want true")
-	}
-	if len(runner.calls) != 1 || !strings.Contains(runner.calls[0], "ps --all --format") {
-		t.Fatalf("unexpected Docker call: %v", runner.calls)
-	}
-
-	stoppedRunner := &fakeRunner{handle: func(_ string, _ []string) ([]byte, error) {
-		return []byte("webdock-php\texited\n"), nil
-	}}
-	stopped := &App{Runner: stoppedRunner}
-	running, err = stopped.projectContainersRunning(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if running {
-		t.Fatal("projectContainersRunning() = true for an exited container")
-	}
+	return f.attach(name, args, stdout, stderr)
 }
 
 func testApp(stdout, stderr *bytes.Buffer, runner *fakeRunner) *App {
@@ -294,14 +49,185 @@ func testApp(stdout, stderr *bytes.Buffer, runner *fakeRunner) *App {
 		Stdin:    strings.NewReader(""),
 		Runner:   runner,
 		Getwd:    func() (string, error) { return "", nil },
-		LocalIPs: func() ([]net.IP, error) { return []net.IP{net.ParseIP("172.17.0.1"), net.ParseIP("172.18.0.1")}, nil },
+		LocalIPs: func() ([]net.IP, error) { return []net.IP{net.ParseIP("172.17.0.1")}, nil },
 		Platform: "darwin",
 	}
 }
 
-func TestUpRejectsWildcardValkeyListener(t *testing.T) {
+func initInstance(t *testing.T) string {
+	t.Helper()
 	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func createBackup(t *testing.T, root string) string {
+	t.Helper()
+	cfg, err := instance.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	if err := backup.Create(root, archive, backup.Options{}, backupManifest(cfg, "test", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	return archive
+}
+
+func imageOK(name string, args []string) ([]byte, error) {
+	call := strings.Join(append([]string{name}, args...), " ")
+	if strings.Contains(call, " image inspect ") || strings.Contains(call, " manifest inspect ") {
+		return []byte("[]"), nil
+	}
+	return nil, errors.New("unexpected command: " + call)
+}
+
+func TestRunInitAndRejectDBFlag(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		if call == "docker network inspect bridge" {
+			return []byte(`[{"IPAM":{"Config":[{"Gateway":"172.17.0.1"}]}}]`), nil
+		}
+		return nil, nil
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C=" + root, "init"}); code != 0 {
+		t.Fatalf("init exit = %d, stderr = %s", code, stderr.String())
+	}
+	cfg, err := instance.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.EnabledComponents(); len(got) != 1 || got[0] != instance.ComponentNginx {
+		t.Fatalf("enabled = %v", got)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code := a.Run(context.Background(), []string{"-C=" + root, "init", "--db", "mysql"})
+	if code == 0 || !strings.Contains(stderr.String(), "unknown init option") {
+		t.Fatalf("init --db exit = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestEnableWithVersionUsesImageCheck(t *testing.T) {
+	root := initInstance(t)
+	var stdout, stderr bytes.Buffer
+	runner := &fakeRunner{handle: imageOK}
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "enable", "redis", "7"}); code != 0 {
+		t.Fatalf("enable exit = %d, stderr = %s", code, stderr.String())
+	}
+	cfg, err := instance.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redis, _ := cfg.Component(instance.ComponentRedis)
+	if !redis.Enabled || redis.Version != "7" || redis.Image != "valkey/valkey:7" {
+		t.Fatalf("redis = %+v", redis)
+	}
+	if !strings.Contains(stdout.String(), "Enabled redis 7") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+
+	badRoot := initInstance(t)
+	badRunner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		return nil, errors.New("not found")
+	}}
+	stdout.Reset()
+	stderr.Reset()
+	a = testApp(&stdout, &stderr, badRunner)
+	code := a.Run(context.Background(), []string{"-C", badRoot, "enable", "redis", "6"})
+	if code == 0 || !strings.Contains(stderr.String(), "not available") {
+		t.Fatalf("missing image exit = %d, stderr = %q", code, stderr.String())
+	}
+	cfg, err = instance.Load(badRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redis, _ = cfg.Component(instance.ComponentRedis)
+	if redis.Enabled {
+		t.Fatal("failed image check changed component state")
+	}
+}
+
+func TestUpStopsDisabledComponentsAndStartsEnabledOnly(t *testing.T) {
+	root := initInstance(t)
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		switch {
+		case call == "docker network inspect bridge":
+			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
+		case strings.Contains(call, " image inspect "):
+			return nil, nil
+		case strings.Contains(call, " ps --status running --services"):
+			return []byte("nginx\nredis\n"), nil
+		case strings.Contains(call, " config --quiet"):
+			return nil, nil
+		case strings.Contains(call, "up -d --wait"):
+			return nil, nil
+		case strings.Contains(call, " exec -T nginx "):
+			return nil, nil
+		case strings.Contains(call, " stop redis"):
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "up"}); code != 0 {
+		t.Fatalf("up exit = %d, stderr = %s", code, stderr.String())
+	}
+	var stoppedRedis, startedNginx, startedRedis bool
+	for _, call := range runner.calls {
+		stoppedRedis = stoppedRedis || strings.Contains(call, "stop redis")
+		startedNginx = startedNginx || (strings.Contains(call, "up -d --wait") && strings.Contains(call, "nginx"))
+		startedRedis = startedRedis || (strings.Contains(call, "up -d --wait") && strings.Contains(call, "redis"))
+	}
+	if !stoppedRedis || !startedNginx || startedRedis {
+		t.Fatalf("lifecycle calls = %v", runner.calls)
+	}
+}
+
+func TestStartPHPRequiresNginxRunning(t *testing.T) {
+	root := initInstance(t)
+	if _, err := instance.SetComponentState(root, instance.ComponentPHP, "true"); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		if strings.Contains(call, " ps --status running --services") {
+			return []byte(""), nil
+		}
+		return nil, nil
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	code := a.Run(context.Background(), []string{"-C", root, "start", "php"})
+	if code == 0 || !strings.Contains(stderr.String(), "requires nginx") {
+		t.Fatalf("start php exit = %d, stderr = %q", code, stderr.String())
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(call, "up -d") {
+			t.Fatalf("PHP started without Nginx: %v", runner.calls)
+		}
+	}
+}
+
+func TestVersionMarkerConfirmation(t *testing.T) {
+	root := initInstance(t)
+	if _, err := instance.SetComponentState(root, instance.ComponentNginx, "false"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.SetComponentState(root, instance.ComponentRedis, "true"); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "data", "redis", ".webdock-version")
+	if err := os.WriteFile(marker, []byte("7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
@@ -309,9 +235,15 @@ func TestUpRejectsWildcardValkeyListener(t *testing.T) {
 		switch {
 		case call == "docker network inspect bridge":
 			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
+		case strings.Contains(call, " image inspect "):
+			return nil, nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\n"), nil
-		case strings.Contains(call, " exec -T "):
+			return []byte("redis\n"), nil
+		case strings.Contains(call, " config --quiet"):
+			return nil, nil
+		case strings.Contains(call, "up -d --wait"):
+			return nil, nil
+		case strings.Contains(call, " exec -T redis "):
 			return nil, nil
 		default:
 			return nil, nil
@@ -319,158 +251,182 @@ func TestUpRejectsWildcardValkeyListener(t *testing.T) {
 	}}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
-	a.Platform = "linux"
-	a.ReadListeners = func() ([]doctor.Listener, error) {
-		return []doctor.Listener{
-			{IP: net.IPv4zero, Port: 80},
-			{IP: net.IPv4zero, Port: 443},
-			{IP: net.ParseIP("127.0.0.1"), Port: 9000},
-			{IP: net.ParseIP("127.0.0.1"), Port: 9001},
-			{IP: net.IPv4zero, Port: 6379},
-		}, nil
+	a.Stdin = strings.NewReader("y\n")
+	if code := a.Run(context.Background(), []string{"-C", root, "up"}); code != 0 {
+		t.Fatalf("up exit = %d, stderr = %s", code, stderr.String())
 	}
-	code := a.Run(context.Background(), []string{"-C", root, "up"})
-	if code == 0 {
-		t.Fatal("up accepted a wildcard Valkey listener")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stderr.String(), "0.0.0.0:6379") {
-		t.Fatalf("stderr = %q", stderr.String())
+	if strings.TrimSpace(string(data)) != "8" {
+		t.Fatalf("marker = %q", data)
+	}
+
+	cancelRoot := initInstance(t)
+	if _, err := instance.SetComponentState(cancelRoot, instance.ComponentNginx, "false"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.SetComponentState(cancelRoot, instance.ComponentRedis, "true"); err != nil {
+		t.Fatal(err)
+	}
+	cancelMarker := filepath.Join(cancelRoot, "data", "redis", ".webdock-version")
+	if err := os.WriteFile(cancelMarker, []byte("7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	a = testApp(&stdout, &stderr, runner)
+	a.Stdin = strings.NewReader("n\n")
+	code := a.Run(context.Background(), []string{"-C", cancelRoot, "up"})
+	if code == 0 || !strings.Contains(stderr.String(), "startup cancelled") {
+		t.Fatalf("cancel exit = %d, stderr = %q", code, stderr.String())
+	}
+	data, err = os.ReadFile(cancelMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "7" {
+		t.Fatalf("cancelled run changed marker to %q", data)
 	}
 }
 
-func TestDoctorRejectsStoppedPortConflict(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
+func TestDatabaseLogicalBackup(t *testing.T) {
+	root := initInstance(t)
+	if _, err := instance.SetComponentState(root, instance.ComponentMySQL, "true"); err != nil {
 		t.Fatal(err)
 	}
-	runner := &fakeRunner{handle: func(string, []string) ([]byte, error) { return nil, nil }}
+	runner := &fakeRunner{
+		handle: func(name string, args []string) ([]byte, error) {
+			call := strings.Join(append([]string{name}, args...), " ")
+			if strings.Contains(call, " ps --status running --services") {
+				return []byte("mysql\n"), nil
+			}
+			return nil, nil
+		},
+		attach: func(_ string, _ []string, stdout, _ io.Writer) error {
+			_, err := io.WriteString(stdout, "CREATE TABLE demo(id int);\n")
+			return err
+		},
+	}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
-	a.Platform = "linux"
-	a.ReadListeners = func() ([]doctor.Listener, error) {
-		return []doctor.Listener{{IP: net.ParseIP("0.0.0.0"), Port: 80}}, nil
+	if code := a.Run(context.Background(), []string{"-C", root, "db", "backup", "mysql"}); code != 0 {
+		t.Fatalf("db backup exit = %d, stderr = %s", code, stderr.String())
 	}
-	code := a.Run(context.Background(), []string{"-C", root, "doctor"})
-	if code == 0 || !strings.Contains(stderr.String(), "port 80") {
-		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	files, err := filepath.Glob(filepath.Join(root, "backups", "db", "*.sql.gz"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("backup files = %v, err = %v", files, err)
+	}
+	file, err := os.Open(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(gz)
+	_ = gz.Close()
+	_ = file.Close()
+	if err != nil || !strings.Contains(string(data), "CREATE TABLE") {
+		t.Fatalf("backup contents = %q, err = %v", data, err)
 	}
 }
 
-func TestDBUseSwitchesRunningDatabase(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "mysql"); err != nil {
-		t.Fatal(err)
+func TestDatabaseDumpCommandsUseContainerEnvironment(t *testing.T) {
+	checks := map[string]string{
+		instance.ComponentMySQL:    "MYSQL_PWD",
+		instance.ComponentPostgres: "PGPASSWORD",
 	}
+	for engine, envName := range checks {
+		command := strings.Join(databaseDumpCommand(engine), " ")
+		if !strings.Contains(command, envName) || strings.Contains(command, "PASSWORD="+envName) {
+			t.Fatalf("%s dump command = %q", engine, command)
+		}
+	}
+}
+
+func TestBackupRestartsOnlyPreviouslyRunningComponents(t *testing.T) {
+	root := initInstance(t)
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		switch {
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\nmysql\n"), nil
+			return []byte("nginx\n"), nil
+		case strings.Contains(call, " config --quiet"):
+			return nil, nil
+		case strings.Contains(call, "up -d --wait"):
+			return nil, nil
+		case strings.Contains(call, " exec -T nginx "):
+			return nil, nil
 		default:
 			return nil, nil
 		}
 	}}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "db", "use", "postgres"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	if code := a.Run(context.Background(), []string{"-C", root, "backup"}); code != 0 {
+		t.Fatalf("backup exit = %d, stderr = %s", code, stderr.String())
+	}
+	var restartedNginx, restartedPHP bool
+	for _, call := range runner.calls {
+		restartedNginx = restartedNginx || (strings.Contains(call, "up -d --wait") && strings.Contains(call, "nginx"))
+		restartedPHP = restartedPHP || (strings.Contains(call, "up -d --wait") && strings.Contains(call, "php"))
+	}
+	if !restartedNginx || restartedPHP {
+		t.Fatalf("restart calls = %v", runner.calls)
+	}
+}
+
+func TestBackupManifestRecordsResolvedVersions(t *testing.T) {
+	root := initInstance(t)
+	if _, err := instance.SetComponentState(root, instance.ComponentPHP, "true"); err != nil {
+		t.Fatal(err)
 	}
 	cfg, err := instance.Load(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DBEngine() != "postgres" {
-		t.Fatalf("DB engine = %q", cfg.DBEngine())
+	manifest := backupManifest(cfg, "0.2.0", time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC))
+	if got := manifestVersion(manifest, instance.ComponentNginx); got != "1.26" {
+		t.Fatalf("nginx manifest version = %q", got)
 	}
-	var stoppedMySQL, startedPostgres bool
-	for _, call := range runner.calls {
-		stoppedMySQL = stoppedMySQL || strings.Contains(call, "--profile mysql stop mysql")
-		startedPostgres = startedPostgres || strings.Contains(call, "--profile postgres up -d --wait --wait-timeout 300 postgres")
+	if got := manifestVersion(manifest, instance.ComponentPHP); got != "8.4" {
+		t.Fatalf("php manifest version = %q", got)
 	}
-	if !stoppedMySQL || !startedPostgres {
-		t.Fatalf("database switch calls missing: %v", runner.calls)
+	if got := manifestVersion(manifest, instance.ComponentRedis); got != "" {
+		t.Fatalf("disabled redis manifest version = %q", got)
 	}
 }
 
-func TestDBUseRollsBackOnStartFailure(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "mysql"); err != nil {
+func TestRestoreVersionMismatchNoKeepsCurrentComponent(t *testing.T) {
+	source := initInstance(t)
+	if _, err := instance.SetComponentState(source, instance.ComponentMySQL, "8.4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "data", "mysql", "archive-data"), []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := createBackup(t, source)
+
+	target := initInstance(t)
+	if _, err := instance.SetComponentState(target, instance.ComponentMySQL, "5.7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "data", "mysql", "current-data"), []byte("current"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
 		switch {
-		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\nmysql\n"), nil
-		case strings.Contains(call, "--profile postgres up -d --wait --wait-timeout 300 postgres"):
-			return nil, errors.New("postgres failed")
-		default:
+		case call == "docker ps --all --format {{.Names}}\t{{.State}}":
 			return nil, nil
-		}
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "db", "use", "postgres"})
-	if code == 0 {
-		t.Fatal("db use unexpectedly succeeded")
-	}
-	cfg, err := instance.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DBEngine() != "mysql" {
-		t.Fatalf("DB engine = %q, want rollback to mysql", cfg.DBEngine())
-	}
-	stoppedPostgres := false
-	for _, call := range runner.calls {
-		stoppedPostgres = stoppedPostgres || strings.Contains(call, "--profile postgres stop postgres")
-	}
-	if !stoppedPostgres {
-		t.Fatalf("failed postgres container was not stopped: %v", runner.calls)
-	}
-}
-
-func TestDBUseRejectsIncompleteLayout(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "mysql"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(root, "config", "php", "php.ini")); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(string, []string) ([]byte, error) { return nil, nil }}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "db", "use", "postgres"})
-	if code == 0 {
-		t.Fatal("db use unexpectedly accepted an incomplete layout")
-	}
-	cfg, err := instance.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DBEngine() != "mysql" {
-		t.Fatalf("DB engine = %q, want mysql", cfg.DBEngine())
-	}
-}
-
-func TestBackupStopsAndRestartsRunningStack(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "sites", "index.php"), []byte("<?php\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		switch {
-		case strings.Contains(call, " ps --all --format "):
-			return []byte("webdock-nginx\trunning\n"), nil
+		case call == "docker network inspect bridge":
+			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
+		case strings.Contains(call, " image inspect "):
+			return nil, nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\n"), nil
-		case strings.Contains(call, " exec -T "):
 			return nil, nil
 		default:
 			return nil, nil
@@ -478,87 +434,279 @@ func TestBackupStopsAndRestartsRunningStack(t *testing.T) {
 	}}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "backup", "--with-sites"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	a.Stdin = strings.NewReader("n\n")
+	if code := a.Run(context.Background(), []string{"-C", target, "restore", "--force", archive}); code != 0 {
+		t.Fatalf("restore exit = %d, stderr = %s", code, stderr.String())
 	}
-	archives, err := filepath.Glob(filepath.Join(root, "backups", "*.tar.gz"))
-	if err != nil || len(archives) != 1 {
-		t.Fatalf("archives = %v, err = %v", archives, err)
+	restored, err := instance.Load(target)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var stopped, started bool
-	for _, call := range runner.calls {
-		stopped = stopped || strings.Contains(call, "--profile mysql --profile postgres stop")
-		started = started || strings.Contains(call, "--ansi never --env-file webdock.env -f compose.yaml up -d --wait")
+	mysql, _ := restored.Component(instance.ComponentMySQL)
+	if !mysql.Enabled || mysql.Version != "5.7" {
+		t.Fatalf("mysql after n = %+v", mysql)
 	}
-	if !stopped || !started {
-		t.Fatalf("backup lifecycle calls missing: %v", runner.calls)
+	if _, err := os.Stat(filepath.Join(target, "data", "mysql", "current-data")); err != nil {
+		t.Fatalf("current mysql data was not preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "data", "mysql", "archive-data")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("archive mysql data was copied despite n: %v", err)
 	}
 }
 
-func TestRestoreIntoEmptyInstance(t *testing.T) {
-	source := t.TempDir()
-	if _, err := instance.Init(source, "none"); err != nil {
+func TestRestoreVersionMismatchYesAcceptsArchiveComponent(t *testing.T) {
+	source := initInstance(t)
+	if _, err := instance.SetComponentState(source, instance.ComponentMySQL, "8.4"); err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := backup.Create(source, archive, backup.Options{}); err != nil {
+	if err := os.WriteFile(filepath.Join(source, "data", "mysql", "archive-data"), []byte("archive"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target := t.TempDir()
+	archive := createBackup(t, source)
+
+	target := initInstance(t)
+	if _, err := instance.SetComponentState(target, instance.ComponentMySQL, "5.7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "data", "mysql", "current-data"), []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
+		if call == "docker ps --all --format {{.Names}}\t{{.State}}" {
+			return nil, nil
+		}
 		if call == "docker network inspect bridge" {
 			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
 		}
-		return nil, nil
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", target, "restore", archive})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	cfg, err := instance.Load(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := instance.ValidateLayout(cfg); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stdout.String(), "Restored Webdock instance") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-}
-
-func TestRestoreWithoutForceDoesNotStopRunningStack(t *testing.T) {
-	source := t.TempDir()
-	if _, err := instance.Init(source, "none"); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := backup.Create(source, archive, backup.Options{}); err != nil {
-		t.Fatal(err)
-	}
-	target := t.TempDir()
-	if _, err := instance.Init(target, "none"); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		if strings.Contains(call, " ps --all --format ") {
-			return []byte("webdock-nginx\trunning\n"), nil
+		if strings.Contains(call, " image inspect ") {
+			return nil, nil
+		}
+		if strings.Contains(call, " ps --status running --services") {
+			return nil, nil
 		}
 		return nil, nil
 	}}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", target, "restore", archive})
-	if code == 0 {
-		t.Fatal("restore without force unexpectedly succeeded")
+	a.Stdin = strings.NewReader("y\n")
+	if code := a.Run(context.Background(), []string{"-C", target, "restore", "--force", archive}); code != 0 {
+		t.Fatalf("restore exit = %d, stderr = %s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), backup.ErrForceRequired.Error()) {
-		t.Fatalf("stderr = %q", stderr.String())
+	restored, err := instance.Load(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mysql, _ := restored.Component(instance.ComponentMySQL)
+	if !mysql.Enabled || mysql.Version != "8.4" {
+		t.Fatalf("mysql after y = %+v", mysql)
+	}
+	if _, err := os.Stat(filepath.Join(target, "data", "mysql", "archive-data")); err != nil {
+		t.Fatalf("archive mysql data was not restored: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "data", "mysql", "current-data")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("current mysql data remains after y: %v", err)
+	}
+}
+
+func TestStoppedPortCheckOnlyUsesEnabledComponents(t *testing.T) {
+	root := initInstance(t)
+	cfg, err := instance.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{Platform: "linux", ReadListeners: func() ([]doctor.Listener, error) {
+		return []doctor.Listener{{IP: net.ParseIP("127.0.0.1"), Port: 3306}}, nil
+	}}
+	if err := a.checkStoppedPortConflicts(cfg, map[string]bool{}); err != nil {
+		t.Fatalf("disabled MySQL caused a conflict: %v", err)
+	}
+	if _, err := instance.SetComponentState(root, instance.ComponentMySQL, "true"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = instance.Load(root)
+	if err := a.checkStoppedPortConflicts(cfg, map[string]bool{}); err == nil {
+		t.Fatal("enabled MySQL did not report a port conflict")
+	}
+}
+
+func TestStopAndRedisNameRecognition(t *testing.T) {
+	root := initInstance(t)
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) { return nil, nil }}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "stop", "redis"}); code != 0 {
+		t.Fatalf("stop exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(strings.Join(runner.calls, "\n"), " stop redis") {
+		t.Fatalf("stop calls = %v", runner.calls)
+	}
+	if !isWebdockContainer("webdock-redis") || isWebdockContainer("webdock-valkey") {
+		t.Fatal("redis container name recognition is incorrect")
+	}
+}
+
+func TestConfirmDefaultNoAndEOF(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, &fakeRunner{})
+	a.Stdin = strings.NewReader("\n")
+	ok, err := a.confirm("continue? ")
+	if err != nil || ok {
+		t.Fatalf("blank confirmation = %v, %v", ok, err)
+	}
+
+	a = testApp(&stdout, &stderr, &fakeRunner{})
+	a.Stdin = strings.NewReader("")
+	if _, err := a.confirm("continue? "); err == nil {
+		t.Fatal("EOF confirmation succeeded")
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	for _, arg := range []string{"version", "-v", "--version"} {
+		t.Run(arg, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			a := testApp(&stdout, &stderr, &fakeRunner{})
+			a.Version = "0.2.0"
+			if code := a.Run(context.Background(), []string{arg}); code != 0 {
+				t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+			}
+			if got, want := stdout.String(), "webdock 0.2.0\n"; got != want {
+				t.Fatalf("stdout = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestUpPullUsesPullPolicy(t *testing.T) {
+	root := initInstance(t)
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		switch {
+		case strings.Contains(call, " image inspect "):
+			return nil, nil
+		case call == "docker network inspect bridge":
+			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
+		case strings.Contains(call, " ps --status running --services"):
+			return []byte("nginx\n"), nil
+		case strings.Contains(call, " exec -T nginx "):
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "up", "--pull"}); code != 0 {
+		t.Fatalf("up --pull exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(strings.Join(runner.calls, "\n"), "--pull always") {
+		t.Fatalf("pull policy missing: %v", runner.calls)
+	}
+}
+
+func TestUpFailureRestoresRedisConfig(t *testing.T) {
+	root := initInstance(t)
+	configPath := filepath.Join(root, "config", "redis", "valkey.conf")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		switch {
+		case strings.Contains(call, " image inspect "):
+			return nil, nil
+		case call == "docker network inspect bridge":
+			return []byte(`[{"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]`), nil
+		case strings.Contains(call, " ps --status running --services"):
+			return nil, nil
+		case strings.Contains(call, "up -d --wait"):
+			return nil, errors.New("start failed")
+		default:
+			return nil, nil
+		}
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "up"}); code == 0 {
+		t.Fatal("up unexpectedly succeeded")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("Redis config was not restored:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestLogsAndShellUseAttach(t *testing.T) {
+	root := initInstance(t)
+	runner := &fakeRunner{}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "logs", "nginx"}); code != 0 {
+		t.Fatalf("logs exit = %d, stderr = %s", code, stderr.String())
+	}
+	if code := a.Run(context.Background(), []string{"-C", root, "shell", "redis"}); code != 0 {
+		t.Fatalf("shell exit = %d, stderr = %s", code, stderr.String())
+	}
+	calls := strings.Join(runner.calls, "\n")
+	if !strings.Contains(calls, "logs --tail 200 --follow nginx") || !strings.Contains(calls, "exec redis sh") {
+		t.Fatalf("attach calls = %v", runner.calls)
+	}
+}
+
+func TestProjectContainersRunningRecognizesFixedNames(t *testing.T) {
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		return []byte("other\trunning\nwebdock-redis\trunning\n"), nil
+	}}
+	a := testApp(&bytes.Buffer{}, &bytes.Buffer{}, runner)
+	running, err := a.projectContainersRunning(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running {
+		t.Fatal("webdock-redis was not recognized")
+	}
+}
+
+func TestInitWritesDetectedRedisBridgeGateway(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		if call == "docker network inspect bridge" {
+			return []byte(`[{"IPAM":{"Config":[{"Gateway":"172.17.0.1"}]}}]`), nil
+		}
+		return nil, nil
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	if code := a.Run(context.Background(), []string{"-C", root, "init"}); code != 0 {
+		t.Fatalf("init exit = %d, stderr = %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(root, "config", "redis", "valkey.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "bind 127.0.0.1 172.17.0.1") {
+		t.Fatalf("Redis config = %s", data)
+	}
+}
+
+func TestRestoreWithoutForceDoesNotStopStack(t *testing.T) {
+	source := initInstance(t)
+	archive := createBackup(t, source)
+	target := initInstance(t)
+	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		return nil, nil
+	}}
+	var stdout, stderr bytes.Buffer
+	a := testApp(&stdout, &stderr, runner)
+	code := a.Run(context.Background(), []string{"-C", target, "restore", archive})
+	if code == 0 || !strings.Contains(stderr.String(), backup.ErrForceRequired.Error()) {
+		t.Fatalf("restore exit = %d, stderr = %q", code, stderr.String())
 	}
 	for _, call := range runner.calls {
 		if strings.Contains(call, " stop") {
@@ -568,49 +716,27 @@ func TestRestoreWithoutForceDoesNotStopRunningStack(t *testing.T) {
 }
 
 func TestRestoreRefusesRunningContainersWithBrokenConfig(t *testing.T) {
-	source := t.TempDir()
-	if _, err := instance.Init(source, "none"); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := backup.Create(source, archive, backup.Options{}); err != nil {
-		t.Fatal(err)
-	}
-	target := t.TempDir()
-	if _, err := instance.Init(target, "none"); err != nil {
-		t.Fatal(err)
-	}
+	source := initInstance(t)
+	archive := createBackup(t, source)
+	target := initInstance(t)
 	if err := os.WriteFile(filepath.Join(target, "webdock.env"), []byte("broken\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		if strings.Contains(call, " ps --all --format ") {
-			return []byte("webdock-nginx\trunning\n"), nil
-		}
-		return nil, nil
+		return []byte("webdock-nginx\trunning\n"), nil
 	}}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
 	code := a.Run(context.Background(), []string{"-C", target, "restore", "--force", archive})
 	if code == 0 || !strings.Contains(stderr.String(), "containers are running") {
-		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+		t.Fatalf("restore exit = %d, stderr = %q", code, stderr.String())
 	}
 }
 
-func TestRestoreStopsAndRestartsRunningStack(t *testing.T) {
-	source := t.TempDir()
-	if _, err := instance.Init(source, "none"); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := backup.Create(source, archive, backup.Options{}); err != nil {
-		t.Fatal(err)
-	}
-	target := t.TempDir()
-	if _, err := instance.Init(target, "none"); err != nil {
-		t.Fatal(err)
-	}
+func TestRestoreRestartsPreviouslyRunningComponents(t *testing.T) {
+	source := initInstance(t)
+	archive := createBackup(t, source)
+	target := initInstance(t)
 	psFormatCalls := 0
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
 		call := strings.Join(append([]string{name}, args...), " ")
@@ -622,126 +748,24 @@ func TestRestoreStopsAndRestartsRunningStack(t *testing.T) {
 			}
 			return nil, nil
 		case strings.Contains(call, " ps --status running --services"):
-			return []byte("nginx\nphp\nvalkey\n"), nil
+			return []byte("nginx\n"), nil
+		case strings.Contains(call, " image inspect "):
+			return nil, nil
 		case call == "docker network inspect bridge":
 			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
+		case strings.Contains(call, " exec -T nginx "):
+			return nil, nil
 		default:
 			return nil, nil
 		}
 	}}
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", target, "restore", "--force", archive})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	if code := a.Run(context.Background(), []string{"-C", target, "restore", "--force", archive}); code != 0 {
+		t.Fatalf("restore exit = %d, stderr = %s", code, stderr.String())
 	}
-	var stopped, restarted bool
-	for _, call := range runner.calls {
-		stopped = stopped || strings.Contains(call, "stop")
-		restarted = restarted || strings.Contains(call, "up -d --force-recreate")
-	}
-	if !stopped || !restarted {
-		t.Fatalf("restore lifecycle calls missing: %v", runner.calls)
-	}
-}
-
-func TestInitAcceptsDirectoryBeforeDBFlag(t *testing.T) {
-	root := t.TempDir()
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, &fakeRunner{handle: func(string, []string) ([]byte, error) { return nil, nil }})
-	code := a.Run(context.Background(), []string{"init", root, "--db", "mysql"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	cfg, err := instance.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DBEngine() != "mysql" {
-		t.Fatalf("DB engine = %q", cfg.DBEngine())
-	}
-}
-
-func TestUpRejectsOccupiedPortBeforeDockerStart(t *testing.T) {
-	root := t.TempDir()
-	if _, err := instance.Init(root, "none"); err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		if call == "docker network inspect bridge" {
-			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
-		}
-		return nil, nil
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	a.Platform = "linux"
-	a.ReadListeners = func() ([]doctor.Listener, error) {
-		return []doctor.Listener{{IP: net.ParseIP("0.0.0.0"), Port: 80}}, nil
-	}
-	code := a.Run(context.Background(), []string{"-C", root, "up"})
-	if code == 0 || !strings.Contains(stderr.String(), "port 80") {
-		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
-	}
-	for _, call := range runner.calls {
-		if strings.Contains(call, " up -d ") {
-			t.Fatalf("Docker start ran despite port conflict: %v", runner.calls)
-		}
-	}
-}
-
-func TestStoppedPortCheckOnlyUsesSelectedDatabase(t *testing.T) {
-	tests := []struct {
-		engine  string
-		port    int
-		wantErr bool
-	}{
-		{engine: "none", port: 3306, wantErr: false},
-		{engine: "none", port: 5432, wantErr: false},
-		{engine: "mysql", port: 3306, wantErr: true},
-		{engine: "mysql", port: 5432, wantErr: false},
-		{engine: "postgres", port: 5432, wantErr: true},
-		{engine: "postgres", port: 3306, wantErr: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.engine+"-"+strconv.Itoa(tt.port), func(t *testing.T) {
-			root := t.TempDir()
-			cfg, err := instance.Init(root, tt.engine)
-			if err != nil {
-				t.Fatal(err)
-			}
-			a := &App{Platform: "linux"}
-			a.ReadListeners = func() ([]doctor.Listener, error) {
-				return []doctor.Listener{{IP: net.ParseIP("127.0.0.1"), Port: tt.port}}, nil
-			}
-			err = a.checkStoppedPortConflicts(cfg, map[string]bool{})
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestInitWritesDetectedBridgeGateway(t *testing.T) {
-	root := t.TempDir()
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		if name == "docker" && len(args) >= 3 && args[0] == "network" && args[1] == "inspect" {
-			return []byte(`[{"IPAM":{"Config":[{"Gateway":"172.17.0.1"}]}}]`), nil
-		}
-		return nil, nil
-	}}
-	var stdout, stderr bytes.Buffer
-	a := testApp(&stdout, &stderr, runner)
-	code := a.Run(context.Background(), []string{"-C", root, "init"})
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
-	}
-	valkey, err := os.ReadFile(filepath.Join(root, "config", "valkey", "valkey.conf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(valkey), "bind 127.0.0.1 172.17.0.1") {
-		t.Fatalf("Valkey config = %s", valkey)
+	calls := strings.Join(runner.calls, "\n")
+	if !strings.Contains(calls, " stop") || !strings.Contains(calls, "up -d --wait --wait-timeout 300 --force-recreate nginx") {
+		t.Fatalf("restore lifecycle calls = %v", runner.calls)
 	}
 }

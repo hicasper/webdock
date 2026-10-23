@@ -12,23 +12,39 @@ import (
 	"webdock/templates"
 )
 
-type ValkeyData struct {
+type RedisData struct {
 	Bind      string
 	MaxMemory string
 	Password  string
 }
 
-func Compose(root string) error {
-	data, err := templates.Read("compose/compose.yaml.tmpl")
+type ComposeData struct {
+	NginxImage    string
+	PHPImage      string
+	RedisImage    string
+	MySQLImage    string
+	PostgresImage string
+}
+
+func Compose(root string, data ComposeData) error {
+	raw, err := templates.Read("compose/compose.yaml.tmpl")
 	if err != nil {
 		return err
 	}
-	return WriteFile(filepath.Join(root, "compose.yaml"), data, 0o644)
+	tmpl, err := template.New("compose").Option("missingkey=error").Parse(string(raw))
+	if err != nil {
+		return fmt.Errorf("parse Compose template: %w", err)
+	}
+	var out bytes.Buffer
+	if err := tmpl.Execute(&out, data); err != nil {
+		return fmt.Errorf("render Compose: %w", err)
+	}
+	return WriteFile(filepath.Join(root, "compose.yaml"), out.Bytes(), 0o644)
 }
 
-func ValkeyConfig(root string, data ValkeyData) error {
+func RedisConfig(root string, data RedisData) error {
 	if data.Password == "" {
-		return fmt.Errorf("render Valkey config: password is empty")
+		return fmt.Errorf("render Redis config: password is empty")
 	}
 	raw, err := templates.Read("valkey/valkey.conf.tmpl")
 	if err != nil {
@@ -36,7 +52,7 @@ func ValkeyConfig(root string, data ValkeyData) error {
 	}
 	tmpl, err := template.New("valkey").Option("missingkey=error").Parse(string(raw))
 	if err != nil {
-		return fmt.Errorf("parse Valkey template: %w", err)
+		return fmt.Errorf("parse Redis template: %w", err)
 	}
 	hash := sha256.Sum256([]byte(data.Password))
 	templateData := struct {
@@ -50,9 +66,9 @@ func ValkeyConfig(root string, data ValkeyData) error {
 	}
 	var out bytes.Buffer
 	if err := tmpl.Execute(&out, templateData); err != nil {
-		return fmt.Errorf("render Valkey config: %w", err)
+		return fmt.Errorf("render Redis config: %w", err)
 	}
-	return WriteFile(filepath.Join(root, "config", "valkey", "valkey.conf"), out.Bytes(), 0o644)
+	return WriteFile(filepath.Join(root, "config", "redis", "valkey.conf"), out.Bytes(), 0o644)
 }
 
 // WriteFile replaces path atomically while preserving the previous file if any

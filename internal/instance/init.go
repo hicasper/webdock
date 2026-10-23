@@ -16,16 +16,13 @@ import (
 var ErrAlreadyInitialized = errors.New("webdock instance is already initialized")
 
 type Config struct {
-	Root   string
-	Values Values
-}
-
-func (c Config) DBEngine() string {
-	return c.Values["DB_ENGINE"]
+	Root       string
+	Values     Values
+	Components []Component
 }
 
 func (c Config) BridgeNetworks() []string {
-	raw := c.Values["VALKEY_BRIDGE_NETWORKS"]
+	raw := c.Values["REDIS_BRIDGE_NETWORKS"]
 	if raw == "" {
 		return []string{"bridge"}
 	}
@@ -46,10 +43,7 @@ func (c Config) EnvFile() string {
 	return filepath.Join(c.Root, "webdock.env")
 }
 
-func Init(root, dbEngine string) (Config, error) {
-	if err := ValidateDBEngine(dbEngine); err != nil {
-		return Config{}, err
-	}
+func Init(root string) (Config, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return Config{}, fmt.Errorf("resolve instance directory: %w", err)
@@ -71,18 +65,26 @@ func Init(root, dbEngine string) (Config, error) {
 		secrets[i] = secret
 	}
 	values := Values{
-		"DB_ENGINE":               dbEngine,
 		"TZ":                      "UTC",
-		"VALKEY_MAXMEMORY":        "128mb",
-		"VALKEY_BRIDGE_NETWORKS":  "bridge",
-		"VALKEY_PASSWORD":         secrets[0],
+		"ENABLE_NGINX":            "true",
+		"ENABLE_PHP":              "false",
+		"ENABLE_REDIS":            "false",
+		"ENABLE_MYSQL":            "false",
+		"ENABLE_POSTGRES":         "false",
+		"REDIS_MAXMEMORY":         "128mb",
+		"REDIS_BRIDGE_NETWORKS":   "bridge",
+		"REDIS_PASSWORD":          secrets[0],
 		"MYSQL_ROOT_PASSWORD":     secrets[1],
 		"MYSQL_PASSWORD":          secrets[2],
 		"POSTGRES_PASSWORD":       secrets[3],
 		"NGINX_UI_APP_JWT_SECRET": secrets[4],
 		"NGINX_UI_CRYPTO_SECRET":  secrets[5],
 	}
-	cfg := Config{Root: root, Values: values}
+	components, err := ParseComponents(values)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := Config{Root: root, Values: values, Components: components}
 
 	if err := ensureDirectories(root); err != nil {
 		return Config{}, err
@@ -96,14 +98,14 @@ func Init(root, dbEngine string) (Config, error) {
 	if err := seedFile("mysql/my.cnf", filepath.Join(root, "config", "mysql", "my.cnf"), 0o644); err != nil {
 		return Config{}, err
 	}
-	if err := render.ValkeyConfig(root, render.ValkeyData{
+	if err := render.RedisConfig(root, render.RedisData{
 		Bind:      "127.0.0.1",
-		MaxMemory: values["VALKEY_MAXMEMORY"],
-		Password:  values["VALKEY_PASSWORD"],
+		MaxMemory: values["REDIS_MAXMEMORY"],
+		Password:  values["REDIS_PASSWORD"],
 	}); err != nil {
 		return Config{}, err
 	}
-	if err := render.Compose(root); err != nil {
+	if err := render.Compose(root, cfg.ComposeData()); err != nil {
 		return Config{}, err
 	}
 	if err := writeNewFile(envPath, RenderEnv(values), 0o600); err != nil {
@@ -132,28 +134,19 @@ func Load(root string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("load webdock.env: %w", err)
 	}
-	if err := validateRequired(values); err != nil {
+	components, err := validateRequired(values)
+	if err != nil {
 		return Config{}, err
 	}
-	return Config{Root: absRoot, Values: values}, nil
+	return Config{Root: absRoot, Values: values, Components: components}, nil
 }
 
-func ValidateDBEngine(value string) error {
-	switch value {
-	case "none", "mysql", "postgres":
-		return nil
-	default:
-		return fmt.Errorf("invalid database %q: want none, mysql, or postgres", value)
-	}
-}
-
-func validateRequired(values Values) error {
+func validateRequired(values Values) ([]Component, error) {
 	required := []string{
-		"DB_ENGINE",
 		"TZ",
-		"VALKEY_MAXMEMORY",
-		"VALKEY_BRIDGE_NETWORKS",
-		"VALKEY_PASSWORD",
+		"REDIS_MAXMEMORY",
+		"REDIS_BRIDGE_NETWORKS",
+		"REDIS_PASSWORD",
 		"MYSQL_ROOT_PASSWORD",
 		"MYSQL_PASSWORD",
 		"POSTGRES_PASSWORD",
@@ -161,11 +154,15 @@ func validateRequired(values Values) error {
 		"NGINX_UI_CRYPTO_SECRET",
 	}
 	for _, key := range required {
-		if values[key] == "" {
-			return fmt.Errorf("webdock.env is missing %s", key)
+		if strings.TrimSpace(values[key]) == "" {
+			return nil, fmt.Errorf("webdock.env is missing %s", key)
 		}
 	}
-	return ValidateDBEngine(values["DB_ENGINE"])
+	return ParseComponents(values)
+}
+
+func ValidateEnvironment(values Values) ([]Component, error) {
+	return validateRequired(values)
 }
 
 func ensureDirectories(root string) error {
@@ -180,11 +177,11 @@ func ensureDirectories(root string) error {
 		"config/nginx/streams-available",
 		"config/nginx/streams-enabled",
 		"config/php",
-		"config/valkey",
+		"config/redis",
 		"config/mysql",
 		"sites",
 		"data/nginx-ui",
-		"data/valkey",
+		"data/redis",
 		"data/mysql",
 		"data/postgres",
 		"logs/nginx",
@@ -350,30 +347,4 @@ func randomSecret() (string, error) {
 		return "", fmt.Errorf("generate secret: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func SetDBEngine(root, dbEngine string) (Config, error) {
-	if err := ValidateDBEngine(dbEngine); err != nil {
-		return Config{}, err
-	}
-	cfg, err := Load(root)
-	if err != nil {
-		return Config{}, err
-	}
-	if cfg.DBEngine() == dbEngine {
-		return cfg, nil
-	}
-	previousEnv := RenderEnv(cfg.Values)
-	cfg.Values["DB_ENGINE"] = dbEngine
-	if err := render.WriteFile(cfg.EnvFile(), RenderEnv(cfg.Values), 0o600); err != nil {
-		return Config{}, err
-	}
-	if err := render.Compose(cfg.Root); err != nil {
-		restoreErr := render.WriteFile(cfg.EnvFile(), previousEnv, 0o600)
-		if restoreErr != nil {
-			return Config{}, fmt.Errorf("render Compose: %v; restore webdock.env: %w", err, restoreErr)
-		}
-		return Config{}, err
-	}
-	return cfg, nil
 }

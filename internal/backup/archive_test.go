@@ -14,18 +14,18 @@ import (
 
 func TestCreateDefaultAndOptionalEntries(t *testing.T) {
 	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "webdock.env"), "DB_ENGINE=none\n", 0o600)
+	mustWrite(t, filepath.Join(root, "webdock.env"), "ENABLE_NGINX=true\n", 0o600)
 	mustWrite(t, filepath.Join(root, "config", "nginx", "nginx.conf"), "events {}\n", 0o644)
-	mustWrite(t, filepath.Join(root, "data", "valkey", "appendonly.aof"), "data", 0o600)
+	mustWrite(t, filepath.Join(root, "data", "redis", "appendonly.aof"), "data", 0o600)
 	mustWrite(t, filepath.Join(root, "sites", "app", "index.php"), "<?php\n", 0o644)
 	mustWrite(t, filepath.Join(root, "logs", "nginx", "error.log"), "warning\n", 0o644)
 
 	archive := filepath.Join(root, "backups", "default.tar.gz")
-	if err := Create(root, archive, Options{}); err != nil {
+	if err := Create(root, archive, Options{}, testManifest()); err != nil {
 		t.Fatal(err)
 	}
 	entries := tarEntries(t, archive)
-	for _, want := range []string{"webdock.env", "config", "config/nginx", "config/nginx/nginx.conf", "data", "data/valkey/appendonly.aof"} {
+	for _, want := range []string{"manifest.json", "webdock.env", "config", "config/nginx", "config/nginx/nginx.conf", "data", "data/redis/appendonly.aof"} {
 		if !entries[want] {
 			t.Errorf("default backup missing %q: %v", want, keys(entries))
 		}
@@ -37,7 +37,7 @@ func TestCreateDefaultAndOptionalEntries(t *testing.T) {
 	}
 
 	archive = filepath.Join(root, "backups", "full.tar.gz")
-	if err := Create(root, archive, Options{WithSites: true, WithLogs: true}); err != nil {
+	if err := Create(root, archive, Options{WithSites: true, WithLogs: true}, testManifest()); err != nil {
 		t.Fatal(err)
 	}
 	entries = tarEntries(t, archive)
@@ -54,21 +54,21 @@ func TestCreateDoesNotOverwriteExistingArchive(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "config", "a"), "one\n", 0o644)
 	mustWrite(t, filepath.Join(root, "data", "a"), "one\n", 0o600)
 	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := Create(root, archive, Options{}); err != nil {
+	if err := Create(root, archive, Options{}, testManifest()); err != nil {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(root, "webdock.env"), "two\n", 0o600)
-	if err := Create(root, archive, Options{}); err == nil {
+	if err := Create(root, archive, Options{}, testManifest()); err == nil {
 		t.Fatal("Create overwrote an existing archive")
 	}
 }
 
 func TestRestoreRoundTripAndForce(t *testing.T) {
 	source := t.TempDir()
-	mustWrite(t, filepath.Join(source, "webdock.env"), "DB_ENGINE=none\n", 0o600)
+	mustWrite(t, filepath.Join(source, "webdock.env"), "ENABLE_NGINX=true\n", 0o600)
 	mustWrite(t, filepath.Join(source, "config", "nginx", "nginx.conf"), "old\n", 0o644)
 	mustWrite(t, filepath.Join(source, "config", "nginx", "sites-available", "000-default"), "site\n", 0o644)
-	mustWrite(t, filepath.Join(source, "data", "valkey", "dump.rdb"), "state\n", 0o600)
+	mustWrite(t, filepath.Join(source, "data", "redis", "dump.rdb"), "state\n", 0o600)
 	if err := os.Symlink("../nginx.conf", filepath.Join(source, "config", "nginx", "alias.conf")); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestRestoreRoundTripAndForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := Create(source, archive, Options{}); err != nil {
+	if err := Create(source, archive, Options{}, testManifest()); err != nil {
 		t.Fatal(err)
 	}
 	if entries := tarEntries(t, archive); entries["data/mysql/mysql.sock"] {
@@ -158,7 +158,7 @@ func TestRestoreRejectsSymlinkParentTraversal(t *testing.T) {
 func TestRestoreRejectsMalformedRequiredTree(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "bad.tar.gz")
 	writeTar(t, archive, []tarEntry{
-		{name: "webdock.env", body: "DB_ENGINE=none\n"},
+		{name: "webdock.env", body: "ENABLE_NGINX=true\n"},
 		{name: "config", body: "not a directory"},
 		{name: "data", typeflag: tar.TypeDir},
 	})
@@ -286,4 +286,8 @@ func keys(values map[string]bool) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func testManifest() Manifest {
+	return Manifest{CreatedAt: "2026-10-23T00:00:00Z", Components: map[string]*string{}}
 }

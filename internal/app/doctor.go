@@ -27,7 +27,7 @@ func (a *App) cmdDoctor(ctx context.Context, cfg instance.Config) error {
 		fmt.Fprintln(a.Stdout, "Doctor found no problems. The stack is stopped.")
 		return nil
 	}
-	if err := a.verifyRunning(ctx, cfg, running); err != nil {
+	if err := a.verifyRunning(ctx, cfg, running, cfg.EnabledComponents()); err != nil {
 		return err
 	}
 	fmt.Fprintln(a.Stdout, "Doctor found no problems.")

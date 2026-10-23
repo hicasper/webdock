@@ -33,13 +33,16 @@ func (c Compose) args(profiles []string, args ...string) []string {
 	return append(result, args...)
 }
 
-func Profiles(engine string) []string {
-	if engine == "" || engine == "none" {
-		return nil
+func Profiles(components []string) []string {
+	result := make([]string, 0, len(components))
+	for _, component := range components {
+		if component != "" && component != "none" {
+			result = append(result, component)
+		}
 	}
-	return []string{engine}
+	return result
 }
 
 func AllProfiles() []string {
-	return []string{"mysql", "postgres"}
+	return []string{"nginx", "php", "redis", "mysql", "postgres"}
 }

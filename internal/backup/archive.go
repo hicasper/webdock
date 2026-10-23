@@ -21,7 +21,14 @@ type Options struct {
 	WithLogs  bool
 }
 
-func Create(root, destination string, options Options) error {
+func Create(root, destination string, options Options, manifest Manifest) error {
+	if err := manifest.Validate(nil); err != nil {
+		return err
+	}
+	manifestData, err := manifestJSON(manifest)
+	if err != nil {
+		return err
+	}
 	items := []string{"webdock.env", "config", "data"}
 	if options.WithSites {
 		items = append(items, "sites")
@@ -54,6 +61,18 @@ func Create(root, destination string, options Options) error {
 	}
 	gz := gzip.NewWriter(tmp)
 	tw := tar.NewWriter(gz)
+	manifestHeader := &tar.Header{
+		Name:     "manifest.json",
+		Mode:     0o600,
+		Size:     int64(len(manifestData)),
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(manifestHeader); err != nil {
+		return fmt.Errorf("write manifest header: %w", err)
+	}
+	if _, err := tw.Write(manifestData); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
 	for _, item := range items {
 		base := filepath.Join(root, item)
 		if err := filepath.WalkDir(base, func(current string, entry os.DirEntry, walkErr error) error {
@@ -137,7 +156,12 @@ func isRuntimeArtifact(rel string, mode os.FileMode) bool {
 }
 
 func Restore(root, archive string, force bool) error {
-	return restore(root, archive, force, nil)
+	stage, err := PrepareRestore(root, archive, nil)
+	if err != nil {
+		return err
+	}
+	defer stage.Close()
+	return stage.Apply(root, force, fullRestorePlan(stage.Root()))
 }
 
 // CheckRestoreTarget reports whether replacing root requires --force. Callers
@@ -157,27 +181,31 @@ func CheckRestoreTarget(root string, force bool) error {
 	return nil
 }
 
-// RestoreValidated restores an archive only when validate accepts the staged
-// instance. This lets callers reject malformed archives before replacing any
-// existing data.
-func RestoreValidated(root, archive string, force bool, validate func(string) error) error {
-	return restore(root, archive, force, validate)
+type RestoreStage struct {
+	stage string
 }
 
-func restore(root, archive string, force bool, validate func(string) error) error {
+type RestorePlan struct {
+	Env     []byte
+	Replace []string
+}
+
+func PrepareRestore(root, archive string, validate func(string) error) (*RestoreStage, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
-		return fmt.Errorf("create instance directory: %w", err)
-	}
-	if err := CheckRestoreTarget(root, force); err != nil {
-		return err
+		return nil, fmt.Errorf("create instance directory: %w", err)
 	}
 	stage, err := os.MkdirTemp(root, ".restore-stage-")
 	if err != nil {
-		return fmt.Errorf("create restore staging directory: %w", err)
+		return nil, fmt.Errorf("create restore staging directory: %w", err)
 	}
-	defer os.RemoveAll(stage)
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(stage)
+		}
+	}()
 	if err := extract(archive, stage); err != nil {
-		return err
+		return nil, err
 	}
 	for _, item := range []struct {
 		name string
@@ -189,21 +217,53 @@ func restore(root, archive string, force bool, validate func(string) error) erro
 	} {
 		info, err := os.Lstat(filepath.Join(stage, item.name))
 		if err != nil {
-			return fmt.Errorf("archive is missing %s: %w", item.name, err)
+			return nil, fmt.Errorf("archive is missing %s: %w", item.name, err)
 		}
 		if item.dir && !info.IsDir() {
-			return fmt.Errorf("archive %s is not a directory", item.name)
+			return nil, fmt.Errorf("archive %s is not a directory", item.name)
 		}
 		if !item.dir && !info.Mode().IsRegular() {
-			return fmt.Errorf("archive %s is not a regular file", item.name)
+			return nil, fmt.Errorf("archive %s is not a regular file", item.name)
 		}
 	}
 	if validate != nil {
 		if err := validate(stage); err != nil {
-			return fmt.Errorf("validate archive: %w", err)
+			return nil, fmt.Errorf("validate archive: %w", err)
 		}
 	}
+	cleanup = false
+	return &RestoreStage{stage: stage}, nil
+}
 
+func (s *RestoreStage) Root() string {
+	return s.stage
+}
+
+func (s *RestoreStage) Close() error {
+	if s == nil || s.stage == "" {
+		return nil
+	}
+	err := os.RemoveAll(s.stage)
+	s.stage = ""
+	return err
+}
+
+func (s *RestoreStage) Apply(root string, force bool, plan RestorePlan) error {
+	if err := CheckRestoreTarget(root, force); err != nil {
+		return err
+	}
+	if plan.Env != nil {
+		if err := os.WriteFile(filepath.Join(s.stage, "webdock.env"), plan.Env, 0o600); err != nil {
+			return fmt.Errorf("prepare restored webdock.env: %w", err)
+		}
+		if err := os.Chmod(filepath.Join(s.stage, "webdock.env"), 0o600); err != nil {
+			return fmt.Errorf("secure restored webdock.env: %w", err)
+		}
+	}
+	targets, err := restoreTargetsForPlan(plan)
+	if err != nil {
+		return err
+	}
 	old, err := os.MkdirTemp(root, ".restore-old-")
 	if err != nil {
 		return fmt.Errorf("create restore rollback directory: %w", err)
@@ -217,12 +277,14 @@ func restore(root, archive string, force bool, validate func(string) error) erro
 	rollback := func() error {
 		var errs []error
 		for i := len(moves) - 1; i >= 0; i-- {
-			target := filepath.Join(root, moves[i].name)
+			target := filepath.Join(root, filepath.FromSlash(moves[i].name))
 			if err := os.RemoveAll(target); err != nil {
 				errs = append(errs, fmt.Errorf("remove %s: %w", target, err))
 			}
 			if moves[i].backup != "" {
-				if err := os.Rename(moves[i].backup, target); err != nil {
+				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+					errs = append(errs, fmt.Errorf("create parent for %s: %w", target, err))
+				} else if err := os.Rename(moves[i].backup, target); err != nil {
 					errs = append(errs, fmt.Errorf("restore %s: %w", target, err))
 				}
 			}
@@ -235,17 +297,21 @@ func restore(root, archive string, force bool, validate func(string) error) erro
 		}
 		return cause
 	}
-	for _, name := range restoreTargets {
-		source := filepath.Join(stage, name)
-		if _, err := os.Lstat(source); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
+	for i, name := range targets {
+		if err := ensureNoSymlinkParents(root, name); err != nil {
+			return rollbackError(err)
+		}
+		source := filepath.Join(s.stage, filepath.FromSlash(name))
+		if _, err := os.Lstat(source); err != nil {
 			return rollbackError(fmt.Errorf("inspect staged %s: %w", name, err))
 		}
-		target := filepath.Join(root, name)
+		target := filepath.Join(root, filepath.FromSlash(name))
 		oldPath := ""
 		if _, err := os.Lstat(target); err == nil {
-			oldPath = filepath.Join(old, name)
+			oldPath = filepath.Join(old, fmt.Sprintf("%03d", i))
+			if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+				return rollbackError(fmt.Errorf("create rollback path for %s: %w", name, err))
+			}
 			if err := os.Rename(target, oldPath); err != nil {
 				return rollbackError(fmt.Errorf("move existing %s: %w", name, err))
 			}
@@ -253,11 +319,75 @@ func restore(root, archive string, force bool, validate func(string) error) erro
 			return rollbackError(fmt.Errorf("inspect target %s: %w", name, err))
 		}
 		moves = append(moves, moved{name: name, backup: oldPath})
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return rollbackError(fmt.Errorf("create parent for %s: %w", name, err))
+		}
 		if err := os.Rename(source, target); err != nil {
 			return rollbackError(fmt.Errorf("install restored %s: %w", name, err))
 		}
 	}
 	return nil
+}
+
+func ensureNoSymlinkParents(root, name string) error {
+	parts := strings.Split(filepath.ToSlash(name), "/")
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect restore parent %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("restore path %q traverses symlink %q", name, current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("restore path %q has non-directory parent %q", name, current)
+		}
+	}
+	return nil
+}
+
+func restoreTargetsForPlan(plan RestorePlan) ([]string, error) {
+	targets := []string{"webdock.env"}
+	seen := map[string]bool{"webdock.env": true}
+	for _, raw := range plan.Replace {
+		name := path.Clean(filepath.ToSlash(raw))
+		if name == "." || name == "" || strings.HasPrefix(name, "../") || name == ".." || path.IsAbs(name) {
+			return nil, fmt.Errorf("invalid restore path %q", raw)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate restore path %q", name)
+		}
+		seen[name] = true
+		targets = append(targets, name)
+	}
+	return targets, nil
+}
+
+func fullRestorePlan(stage string) RestorePlan {
+	replace := []string{"config", "data"}
+	for _, name := range []string{"sites", "logs"} {
+		if _, err := os.Lstat(filepath.Join(stage, name)); err == nil {
+			replace = append(replace, name)
+		}
+	}
+	return RestorePlan{Replace: replace}
+}
+
+// RestoreValidated restores an archive only when validate accepts the staged
+// instance. This lets callers reject malformed archives before replacing any
+// existing data.
+func RestoreValidated(root, archive string, force bool, validate func(string) error) error {
+	stage, err := PrepareRestore(root, archive, validate)
+	if err != nil {
+		return err
+	}
+	defer stage.Close()
+	return stage.Apply(root, force, fullRestorePlan(stage.Root()))
 }
 
 func extract(archive, destination string) error {
@@ -373,7 +503,8 @@ func validateEntry(header *tar.Header) (string, error) {
 	if name == "." || strings.HasPrefix(name, "../") || path.IsAbs(name) {
 		return "", fmt.Errorf("unsafe archive path %q", header.Name)
 	}
-	allowed := name == "webdock.env" ||
+	allowed := name == "manifest.json" ||
+		name == "webdock.env" ||
 		name == "config" || strings.HasPrefix(name, "config/") ||
 		name == "data" || strings.HasPrefix(name, "data/") ||
 		name == "sites" || strings.HasPrefix(name, "sites/") ||

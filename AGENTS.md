@@ -15,15 +15,19 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 ## 不可随意改变的约束
 
 - 仅支持 Linux、rootful Docker Engine 和 Docker Compose v2。
-- 固定容器名为 `webdock-nginx`、`webdock-php`、`webdock-valkey`、`webdock-mysql`、`webdock-postgres`。这些名称参与恢复前的运行态检测，修改时必须同步 `internal/app/runtime.go`、Compose 模板、测试和文档。
+- 固定组件和容器名为 `nginx`/`webdock-nginx`、`php`/`webdock-php`、`redis`/`webdock-redis`、`mysql`/`webdock-mysql`、`postgres`/`webdock-postgres`。这些名称参与恢复前的运行态检测，修改时必须同步 `internal/app/runtime.go`、Compose 模板、测试和文档。
+- 五个 Compose 服务都使用同名 profile；`ENABLE_NGINX`、`ENABLE_PHP`、`ENABLE_REDIS`、`ENABLE_MYSQL`、`ENABLE_POSTGRES` 同时表达启用状态和版本。`false` 禁用，`true` 使用默认版本，其它合法值表示精确版本。PHP 启用时必须同时启用 Nginx。
+- 不维护代码版本白名单。组件镜像由名称和版本拼接后通过 `docker image inspect`/`docker manifest inspect` 检查；已验证版本只记录在 `webdock.env` 注释和文档中。
 - 所有服务使用 `network_mode: host` 和 `restart: unless-stopped`。
 - Nginx 对外监听 80/443；PHP-FPM 监听 `127.0.0.1:9000`；Nginx UI 监听 `127.0.0.1:9001`；MySQL/PostgreSQL 只监听回环地址。
-- Valkey 只能监听 `127.0.0.1` 和经本地接口验证过的 IPv4 Docker bridge 网关，绝不能退化到 `0.0.0.0`。
+- Redis 只能监听 `127.0.0.1` 和经本地接口验证过的 IPv4 Docker bridge 网关，绝不能退化到 `0.0.0.0`。
 - Nginx UI 自行管理 Nginx 配置和 reload/restart，不要在 Webdock 中另做一套 Nginx UI 配置控制器。
 - `webdock.env` 必须是普通文件且权限为 `0600`。任何新凭据都不得写入日志、进程参数或 Compose 的明文命令参数。
-- 默认备份包含 `webdock.env`、`config/`、`data/`；`sites/` 和 `logs/` 只在显式选项下包含。恢复必须先在临时目录完成校验，再替换现有数据。
+- 默认备份包含 `webdock.env`、`config/`、`data/`；`sites/` 和 `logs/` 只在显式选项下包含。归档必须包含精简 `manifest.json`，每个组件的值只能是版本字符串或 `null`。
+- 恢复必须先在临时目录完成校验，再逐组件替换配置和数据。版本冲突时 `y` 接受归档版本，`n` 跳过该组件，EOF 中止整体恢复。
+- Redis、MySQL、PostgreSQL 的数据目录使用 `.webdock-version` 记录初始化版本；标记不一致时默认不启动，确认 `y` 后才能强制继续，且必须等启动和健康检查成功后再更新标记。
 - 归档恢复可以保留实例内部的相对软链接，但必须拒绝绝对路径、越界目标、重复 entry，以及通过软链接父目录继续写入。
-- 镜像标签只保证大版本兼容，不锁 digest。Nginx 与 PHP 发布到同一个仓库，当前稳定标签为 `hicasper/webdock:nginx-1.26` 和 `hicasper/webdock:php-8.4`；开发阶段直接覆盖这两个标签，不发布 commit 或 Git tag 版本化镜像。
+- 镜像标签只保证大版本兼容，不锁 digest。Nginx 与 PHP 发布到同一个仓库，当前默认标签为 `hicasper/webdock:nginx-1.26` 和 `hicasper/webdock:php-8.4`；Redis 使用 `valkey/valkey:<version>`，PostgreSQL 使用 `tensorchord/vchord-suite:pg<version>-latest`。
 - 不提交 `runner-info.test`、`runner-key.test` 或其他 `runner-*.test` 文件；它们可能包含真实 runner 的访问信息。
 - 项目在 1.0 前使用 `0.x.y` 版本号；唯一版本源是 `cmd/webdock/VERSION`，Release tag 由它生成。
 
@@ -42,7 +46,7 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 ├── internal/instance/       # 实例配置、初始化、布局校验、默认证书和环境文件
 ├── internal/network/        # Docker bridge 网关发现和本机地址验证
 ├── internal/render/         # 模板渲染和原子文件替换
-├── templates/               # 嵌入二进制的 Compose、Nginx、PHP、MySQL、Valkey 模板
+├── templates/               # 嵌入二进制的 Compose、Nginx、PHP、MySQL、Redis 模板
 ├── images/nginx/            # Nginx + Nginx UI + 动态模块镜像
 ├── images/php/              # PHP 8.4 FPM + 扩展 + Composer 镜像
 ├── tests/                   # 跨镜像静态契约测试
@@ -61,18 +65,19 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 
 - `app.go`：命令路由、全局 `-C/--dir` 参数、实例加载、帮助输出和依赖注入字段。
 - `init.go`：调用实例初始化并输出路径。
-- `lifecycle.go`：`up`、`down`、`restart` 及启动/重建流程。
-- `runtime.go`：Valkey 配置渲染、服务探测、固定容器运行态检测、监听规则和 Valkey bind 解析。
-- `database.go`：数据库 profile 切换、失败回滚。
+- `lifecycle.go`：`enable`、`disable`、`up`、`down`、`start`、`stop`、`restart`、启用集合收敛和按组件启动。
+- `components.go`：版本标记提示、成功后的标记写入和通用单行确认输入。
+- `runtime.go`：Redis 配置渲染、服务探测、固定容器运行态检测、监听规则、镜像预检和 Redis bind 解析。
+- `database.go`：MySQL/PostgreSQL 在线逻辑备份。
 - `inspect.go`：`status`、`logs`、`shell`、`ui`。
 - `doctor.go`：只读诊断入口。
 - `backup.go`：停止运行栈、创建备份、校验并恢复归档。
 
-`App` 的文件、命令执行器、工作目录、监听器和平台字段用于测试注入。新增外部副作用时优先通过 `docker.Runner` 或可注入函数实现，避免测试依赖真实 Docker。
+`App` 的文件、命令执行器、工作目录、监听器、平台字段和输入读取器用于测试注入。新增外部副作用时优先通过 `docker.Runner` 或可注入函数实现，避免测试依赖真实 Docker。
 
 ### `internal/backup`
 
-创建归档时跳过 socket、`.sock`、`.sock.lock` 和 `.pid`，不跟随目录软链接。恢复时使用 staging 目录、校验回调、旧数据临时目录和回滚移动，保证校验失败不会替换目标。
+创建归档时跳过 socket、`.sock`、`.sock.lock` 和 `.pid`，不跟随目录软链接，并写入 `manifest.json`。恢复分为 `PrepareRestore` 和 `RestoreStage.Apply` 两阶段：先解压、校验和交互决策，再停止容器并按键替换路径。回滚移动必须保持原子性和已跳过组件不变。
 
 `extract` 中的 `seen`、`validateEntry` 和 `ensureParentPath` 是安全边界。不要为了让某个归档“能解压”而放宽这些检查；应修正归档生成逻辑。
 
@@ -80,22 +85,25 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 
 `Runner` 是唯一的 Docker 进程边界。`ExecRunner.Output` 合并 stdout/stderr 用于命令型调用；`Attach` 直连终端用于 logs 和 shell。`Compose` 固定传入 `--ansi never`、`--env-file webdock.env`、`-f compose.yaml` 和 profile。
 
-不要在内部绕过 `Compose` 拼接另一套参数顺序。数据库 profile 只应通过 `Profiles`/`AllProfiles` 生成。
+不要在内部绕过 `Compose` 拼接另一套参数顺序。组件 profile 只应通过 `Profiles`/`AllProfiles` 生成。
+
+`images.go` 的镜像预检先看本地 `docker image inspect`，再看 `docker manifest inspect`；不要把它改成固定版本白名单。
 
 ### `internal/doctor`
 
-`ReadListeners` 读取 `/proc/net/tcp` 和 `/proc/net/tcp6`，`ParseProcNet` 只识别 `0A` 监听状态。`ValidateListeners` 检查必需监听、禁止监听、通配地址和 Valkey/数据库地址；`PortConflicts` 用于容器栈停止时检查旧服务占端口。
+`ReadListeners` 读取 `/proc/net/tcp` 和 `/proc/net/tcp6`，`ParseProcNet` 只识别 `0A` 监听状态。`ValidateListeners` 检查必需监听、禁止监听、通配地址和 Redis/数据库地址；`PortConflicts` 用于容器栈停止时检查旧服务占端口。
 
 这里只做只读分析，不执行修复。新增平台支持时要保持非 Linux 路径可跳过，而不是 panic。
 
 ### `internal/instance`
 
-- `init.go`：生成随机凭据、创建完整目录树、写入默认 Nginx/PHP/MySQL/Valkey 配置、证书和 `webdock.env`。
+- `init.go`：生成随机凭据、创建完整目录树、写入默认 Nginx/PHP/MySQL/Redis 配置、证书和 `webdock.env`。
+- `components.go`：五个组件的固定顺序、`ENABLE_*` 解析、默认版本、镜像拼接、PHP/Nginx 依赖、组件环境键/路径和状态更新。
 - `env.go`：严格的 `KEY=VALUE` 解析、稳定排序输出和读取。不要加入隐式 shell 展开。
 - `validate.go`：运行前的关键文件存在性检查。改变实例布局时必须同步这里。
 - `cert.go`：生成仅用于默认站点的自签名 RSA 证书。
 
-初始化遵循“已存在用户文件不覆盖”。修改模板时不要改成每次启动强制覆盖实例配置。
+初始化遵循“已存在用户文件不覆盖”。修改模板时不要改成每次启动强制覆盖实例配置。组件状态更新必须通过 `SetComponentState` 原子写回环境文件。
 
 ### `internal/network`
 
@@ -105,19 +113,19 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 
 ### `internal/render`
 
-Compose 和 Valkey 配置由嵌入模板渲染。`WriteFile` 通过同目录临时文件、`fsync` 和 rename 原子替换；不要改回直接 `os.WriteFile`。
+Compose 和 Redis 配置由嵌入模板渲染。Compose 接收五个动态镜像引用；`WriteFile` 通过同目录临时文件、`fsync` 和 rename 原子替换，不要改回直接 `os.WriteFile`。
 
-Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/valkey.conf`。
+Redis 模板只接收密码哈希，不把明文密码写入 `config/redis/valkey.conf`。
 
 ### `templates`
 
 `templates/templates.go` 使用 `go:embed` 将整个模板树嵌入二进制。模板文件按相对路径读取，例如 `nginx/nginx.conf`。
 
-- `templates/compose/compose.yaml.tmpl`：服务编排、端口、健康检查、日志和固定挂载。
+- `templates/compose/compose.yaml.tmpl`：五个带同名 profile 的服务、动态镜像、端口、健康检查、日志和固定挂载。
 - `templates/nginx/`：全局配置、默认站点、Debian 支持文件、模块入口和 FastCGI snippet。
 - `templates/php/php.ini`：通过 `embed.FS` 注入实例 `config/php/php.ini`。
 - `templates/mysql/my.cnf`：MySQL 的监听和禁用 mysqlx 配置。不要设置 `log_error = stderr`；MySQL 会把它当成数据目录下的 `stderr.err` 文件。保持官方镜像默认的 stderr 日志行为，避免日志进入数据备份。
-- `templates/valkey/valkey.conf.tmpl`：Valkey 运行时配置。
+- `templates/valkey/valkey.conf.tmpl`：Valkey 引擎运行时配置，实例目标为 `config/redis/valkey.conf`。
 
 实例布局、模板路径或默认值变化时，至少检查 `internal/instance/init.go`、`internal/instance/validate.go`、`internal/render/render_test.go` 和 `tests/images_test.go`。
 
@@ -186,12 +194,12 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 │   │   ├── streams-available/
 │   │   └── streams-enabled/
 │   ├── php/php.ini
-│   ├── valkey/valkey.conf
+│   ├── redis/valkey.conf
 │   └── mysql/my.cnf
 ├── sites/
 ├── data/
 │   ├── nginx-ui/
-│   ├── valkey/
+│   ├── redis/
 │   ├── mysql/
 │   └── postgres/
 ├── logs/nginx/
@@ -204,24 +212,26 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 
 ### Init
 
-`app.cmdInit` → `instance.Init` → `ensureDirectories` → `seedNginx`/`seedFile` → `render.ValkeyConfig` → `render.Compose` → 写入 `webdock.env`。只要 `webdock.env` 已存在就视为已初始化，避免误覆盖。
+`app.cmdInit` → `instance.Init` → `ensureDirectories` → `seedNginx`/`seedFile` → `render.RedisConfig` → `render.Compose` → 写入 `webdock.env`。默认只启用 Nginx；只要 `webdock.env` 已存在就视为已初始化，避免误覆盖。
 
 ### Up / Restart
 
-`up` 先校验布局，渲染临时 Valkey bind 地址，检查停止状态下的端口冲突和 Compose preflight，执行 `docker compose up -d --wait --wait-timeout 300`，再通过 `nginx -t`、`php-fpm -t`、`valkey-cli`、`pg_isready`/`mysqladmin` 和监听规则验证运行时。若渲染后的 Valkey 配置需要重载且 Valkey 已在运行，只重启 Valkey，不重启整个栈。失败时恢复旧 Valkey 配置。
+`enable/disable` 只更新持久状态。`up` 先校验布局和镜像，渲染 Redis bind 地址，检查端口冲突和 Compose preflight，停止已禁用但仍运行的组件，再按启用集合执行 `docker compose up -d --wait --wait-timeout 300`。随后通过 `nginx -t`、`php-fpm -t`、`valkey-cli`、`pg_isready`/`mysqladmin` 和监听规则验证运行时。若 Redis 配置需要重载且 Redis 已在运行，只重启 Redis。失败时恢复旧 Redis 配置。
 
-### 数据库切换
+`start/stop/restart` 只作用于单个组件；`start php` 要求 Nginx 正在运行。Redis、MySQL、PostgreSQL 的 `.webdock-version` 与配置版本不同时必须交互确认，默认 n，成功后才更新标记。
 
-`db use` 先校验引擎和实例布局。运行中的栈只停止旧数据库服务，更新 `webdock.env`，渲染 Compose，再启动目标 profile；目标启动或探测失败时回滚配置并尝试恢复旧引擎。不得把迁移数据伪装成切换数据库。
+### 数据库备份
+
+`db backup mysql|postgres` 要求目标组件已启用且正在运行。MySQL 以 gzip SQL 导出，PostgreSQL 以 custom dump 导出到 `backups/db/`；密码只通过容器环境变量展开，不能出现在命令行参数或日志中。
 
 ### Backup / Restore
 
-备份先通过固定容器名判断栈是否运行，必要时通过 Compose stop；归档完成后按原状态启动。恢复同样先检测固定容器，再从 staging 校验实例，最后替换 `webdock.env`、`config/`、`data/`、可选的 `sites/` 和 `logs/`。恢复失败时应重新启动原栈。
+备份通过全部 profile 查询实际运行组件，必要时 Compose stop；归档完成后只重新启动原本运行的组件。归档写入单值组件版本 manifest。恢复先检测固定容器，再解压和校验 staging；版本不一致时逐组件询问 y/n。接受组件仅替换其配置和数据子目录，跳过组件保持原样；最后只启动“恢复前曾运行且恢复后仍启用”的组件。
 
 ## 安全与质量规则
 
 - 错误信息不得包含密码；凭据通过环境变量或 `REDISCLI_AUTH`/`MYSQL_PWD` 传递。
-- 所有写文件操作必须考虑部分失败和原子性；已有文件优先保留，除非命令语义明确要求替换（例如恢复、Valkey 渲染）。
+- 所有写文件操作必须考虑部分失败和原子性；已有文件优先保留，除非命令语义明确要求替换（例如恢复、Redis 渲染）。
 - 新增目录或挂载时同时考虑备份、恢复、权限、容器 UID 和实例迁移。
 - 不引入需要常驻额外容器的依赖，不把简单单机部署拆成微服务控制平面。
 - 不跟随不可信归档中的软链接；不要为了兼容性关闭 `validateEntry` 或 `ensureParentPath`。
@@ -253,17 +263,23 @@ docker build -t webdock:php-test images/php
 具备真实 Docker 环境时再执行：
 
 ```bash
-webdock init /tmp/webdock-test --db none
+webdock init /tmp/webdock-test
 cd /tmp/webdock-test
 webdock up
 webdock status
 webdock doctor
+webdock enable php
+webdock enable mysql
+webdock up
+webdock stop mysql
+webdock start mysql
+webdock db backup mysql
 webdock --version
 webdock backup
 webdock restore --force backups/<archive>.tar.gz
 webdock down
 ```
 
-对于生命周期、数据库切换、备份恢复和网络发现的改动，必须补充 fake runner 单元测试；不要在单元测试中依赖宿主机 Docker。修改 `compose.yaml.tmpl`、实例目录或容器名时，必须同时检查 `tests/images_test.go`、`internal/app/app_test.go`、`internal/instance/instance_test.go` 和 `internal/render/render_test.go`。
+对于生命周期、组件版本、数据库备份、备份恢复和网络发现的改动，必须补充 fake runner 单元测试；不要在单元测试中依赖宿主机 Docker。修改 `compose.yaml.tmpl`、实例目录或容器名时，必须同时检查 `tests/images_test.go`、`internal/app/app_test.go`、`internal/instance/instance_test.go`、`internal/render/render_test.go` 和 `internal/backup/manifest_test.go`。
 
 改动完成后更新 `CHANGELOG.md`；尚未进入新版本的改动放入新的 `Unreleased` 段，不重写已发布的 `0.1.0` 记录。如果修改会影响用户安装、目录、命令、配置或端口，再同步 `README.md`。

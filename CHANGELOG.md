@@ -4,8 +4,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- 组件启用状态与版本统一改为 `ENABLE_NGINX`、`ENABLE_PHP`、`ENABLE_REDIS`、`ENABLE_MYSQL`、`ENABLE_POSTGRES`；`true` 使用默认版本，具体值启用指定版本。
+- 新增 `enable <component> [version]`、`disable`、`start`、`stop` 和单组件 `restart`；`up` 收敛到持久启用状态。
+- 新增基于组件和版本的动态镜像解析与 Docker 镜像存在性检查，已验证版本只记录在配置注释和文档中。
+- 新增 `db backup mysql|postgres` 在线逻辑备份：MySQL 使用 gzip SQL，PostgreSQL 使用 custom dump。
+- 完整备份新增精简 `manifest.json`，每个组件只记录一个启用版本字符串或 `null`。
+- 恢复支持逐组件版本冲突确认：`y` 接受归档版本和数据，`n` 跳过当前组件并继续后续组件。
+- Redis、MySQL、PostgreSQL 新增 `.webdock-version` 数据版本标记；版本变化时默认中止，确认后才强制启动并更新标记。
+
 ### Changed
 
+- Valkey 组件、服务、容器、profile 和环境变量统一更名为 `redis`，实际镜像仍使用 `valkey/valkey`；Redis 支持 7、8。
+- Compose 的五个服务全部使用同名 profile，Nginx、PHP、Redis、MySQL、PostgreSQL 不再绑定为固定容器栈。
+- MySQL 与 PostgreSQL 可以同时启用；删除 `DB_ENGINE`、`db use` 和单数据库选择模型。
+- PostgreSQL 镜像改为 `tensorchord/vchord-suite:pg<version>-latest`，已验证 16、17、18。
 - 将 `edge` 服务、容器、镜像目录和 CLI 服务名统一改为 `nginx`，容器名变为 `webdock-nginx`。
 - Nginx 与 PHP 镜像集中发布到同一个 `hicasper/webdock` 仓库，标签分别为 `nginx-1.26` 和 `php-8.4`；开发阶段直接覆盖，不发布 commit 或 Git tag 版本化标签。
 - Nginx UI 在构建阶段执行 `strip --strip-unneeded` 并立即冒烟测试，随后卸载构建工具；合并最终运行文件 COPY 层。
@@ -13,6 +27,14 @@
 - Nginx 镜像显式选择 `anacron` 满足 `logrotate` 的调度器依赖，避免引入并保留未运行的 `cron` 和 `systemd` 依赖链。
 - s6 服务注册迁移到标准 `user-bundles.d/user/contents.d/` 空文件布局，移除对旧 `s6-rc.d/user` 兼容路径的依赖。
 - CI 增加路径过滤和镜像变更检测：文档等无关改动不触发 workflow，只有对应镜像目录变化时才重建 Nginx/PHP 镜像；二进制 Release 只响应运行时代码、模板和 Go 依赖变化。
+
+### Validation
+
+- 在 Debian amd64、1 vCPU / 512 MB Linux Docker runner 上验证默认只启动 Nginx，随后启用 PHP 8.4、Redis 7、MySQL 8.4、PostgreSQL 16 并分别启动成功。
+- 验证 `stop redis`/`start redis` 不改变持久状态，Redis 7 和 8 的镜像标签可实际启动并通过认证探活。
+- 验证 MySQL 和 PostgreSQL 逻辑备份可以生成有效 gzip SQL / custom dump，并可由数据库客户端或 `pg_restore --list` 读取。
+- 验证完整备份的 `manifest.json` 只记录版本字符串或 `null`，备份期间运行组件和临时停止组件在恢复后各自保持原状态。
+- 验证 Redis 数据版本标记从 7 变为 8 时默认 n 中止，确认 y 后才启动并更新标记。
 
 ## [0.1.0] - 2026-10-22
 

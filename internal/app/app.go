@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ type App struct {
 	ReadListeners func() ([]doctor.Listener, error)
 	Platform      string
 	Version       string
+	promptReader  *bufio.Reader
 }
 
 func New(version string) *App {
@@ -76,6 +78,14 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			}
 			return a.cmdUp(ctx, cfg, *pull)
 		})
+	case "enable":
+		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
+			return a.cmdEnable(ctx, cfg, args)
+		})
+	case "disable":
+		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
+			return a.cmdDisable(cfg, args)
+		})
 	case "down":
 		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
 			if len(args) != 0 {
@@ -83,12 +93,17 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			}
 			return a.cmdDown(ctx, cfg)
 		})
+	case "start":
+		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
+			return a.cmdStart(ctx, cfg, args)
+		})
+	case "stop":
+		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
+			return a.cmdStop(ctx, cfg, args)
+		})
 	case "restart":
 		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
-			if len(args) != 0 {
-				return fmt.Errorf("restart does not accept arguments")
-			}
-			return a.cmdRestart(ctx, cfg)
+			return a.cmdRestart(ctx, cfg, args)
 		})
 	case "status":
 		err = a.withInstance(ctx, root, func(cfg instance.Config) error {
@@ -163,15 +178,19 @@ func (a *App) usage() {
 
 Commands:
   version                                Show version
-  init [DIR] [--db none|mysql|postgres]  Create an instance
+  init [DIR]                             Create an instance
+  enable <component> [version]           Persistently enable a component
+  disable <component>                    Persistently disable a component
   up [--pull]                            Start or update the stack
   down                                   Stop and remove the stack
-  restart                                Restart the stack without pulling
+  start <component>                      Start one enabled component
+  stop <component>                       Stop one component without changing state
+  restart [component]                    Restart running enabled components
   status                                 Show container status
-  logs [service]                         Follow container logs
+  logs [component]                       Follow container logs
   doctor                                 Run read-only checks
-  shell <service>                        Open a shell in a service
-  db use none|mysql|postgres             Change the database engine
+  shell <component>                      Open a shell in a component
+  db backup mysql|postgres               Create a logical database backup
   backup [--with-sites] [--with-logs]    Create an offline backup
   restore [--force] <archive>            Restore an offline backup
   ui                                     Show the Nginx UI URL and tunnel command

@@ -46,7 +46,7 @@ func TestParseProcNetIgnoresNonListeningSockets(t *testing.T) {
 func TestValidateListeners(t *testing.T) {
 	rules := map[int]Rule{
 		80:   {Name: "Nginx HTTP", Required: true, AllowWildcard: true},
-		6379: {Name: "Valkey", Required: true, AllowedIPs: []string{"172.17.0.1"}},
+		6379: {Name: "Redis", Required: true, AllowedIPs: []string{"172.17.0.1"}},
 		9001: {Name: "Nginx UI", Required: true},
 	}
 	listeners := []Listener{
@@ -62,7 +62,7 @@ func TestValidateListeners(t *testing.T) {
 
 func TestValidateListenersRejectsWildcardPrivateService(t *testing.T) {
 	rules := map[int]Rule{
-		6379: {Name: "Valkey", Required: true, AllowedIPs: []string{"172.17.0.1"}},
+		6379: {Name: "Redis", Required: true, AllowedIPs: []string{"172.17.0.1"}},
 	}
 	listeners := []Listener{{IP: net.IPv4zero, Port: 6379}}
 	problems := ValidateListeners(listeners, rules)

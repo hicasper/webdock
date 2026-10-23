@@ -7,9 +7,14 @@ import (
 )
 
 func ValidateLayout(cfg Config) error {
-	files := []string{
-		"webdock.env",
-		"compose.yaml",
+	files := []string{"webdock.env", "compose.yaml"}
+	add := func(enabled bool, names ...string) {
+		if enabled {
+			files = append(files, names...)
+		}
+	}
+	nginx, _ := cfg.Component(ComponentNginx)
+	add(nginx.Enabled,
 		"config/nginx/nginx.conf",
 		"config/nginx/mime.types",
 		"config/nginx/modules-enabled/10-mod-http-geoip2.conf",
@@ -20,10 +25,14 @@ func ValidateLayout(cfg Config) error {
 		"config/nginx/sites-enabled/000-default",
 		"config/nginx/ssl/default.crt",
 		"config/nginx/ssl/default.key",
-		"config/php/php.ini",
-		"config/valkey/valkey.conf",
-		"config/mysql/my.cnf",
-	}
+	)
+	php, _ := cfg.Component(ComponentPHP)
+	add(php.Enabled, "config/php/php.ini")
+	redis, _ := cfg.Component(ComponentRedis)
+	add(redis.Enabled, "config/redis/valkey.conf")
+	mysql, _ := cfg.Component(ComponentMySQL)
+	add(mysql.Enabled, "config/mysql/my.cnf")
+
 	for _, name := range files {
 		path := filepath.Join(cfg.Root, name)
 		info, err := os.Stat(path)

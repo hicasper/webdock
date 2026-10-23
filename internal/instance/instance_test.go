@@ -12,12 +12,15 @@ import (
 
 func TestInitCreatesUsableLayout(t *testing.T) {
 	root := t.TempDir()
-	cfg, err := Init(root, "none")
+	cfg, err := Init(root)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if cfg.Root != root {
 		t.Fatalf("Root = %q, want %q", cfg.Root, root)
+	}
+	if got := cfg.EnabledComponents(); len(got) != 1 || got[0] != ComponentNginx {
+		t.Fatalf("enabled components = %v, want [nginx]", got)
 	}
 	envInfo, err := os.Stat(filepath.Join(root, "webdock.env"))
 	if err != nil {
@@ -25,6 +28,19 @@ func TestInitCreatesUsableLayout(t *testing.T) {
 	}
 	if got := envInfo.Mode().Perm(); got != 0o600 {
 		t.Fatalf("webdock.env mode = %04o, want 0600", got)
+	}
+	env := readFile(t, filepath.Join(root, "webdock.env"))
+	for _, want := range []string{
+		"ENABLE_NGINX=true\n",
+		"ENABLE_PHP=false\n",
+		"ENABLE_REDIS=false\n",
+		"ENABLE_MYSQL=false\n",
+		"ENABLE_POSTGRES=false\n",
+		"# Verified defaults/versions:",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("webdock.env missing %q", want)
+		}
 	}
 	for _, path := range []string{
 		"compose.yaml",
@@ -38,7 +54,7 @@ func TestInitCreatesUsableLayout(t *testing.T) {
 		"config/nginx/ssl/default.crt",
 		"config/nginx/ssl/default.key",
 		"config/php/php.ini",
-		"config/valkey/valkey.conf",
+		"config/redis/valkey.conf",
 		"logs/nginx/access.log",
 		"logs/nginx/error.log",
 	} {
@@ -49,38 +65,34 @@ func TestInitCreatesUsableLayout(t *testing.T) {
 	if err := ValidateLayout(cfg); err != nil {
 		t.Fatalf("ValidateLayout() error = %v", err)
 	}
-
-	enabled, err := os.Readlink(filepath.Join(root, "config/nginx/modules-enabled/20-mod-stream.conf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enabled != "../modules-available/20-mod-stream.conf" {
-		t.Fatalf("module symlink = %q", enabled)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "config/nginx/modules-enabled/40-mod-rtmp.conf")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("RTMP must not be enabled by default, got %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "config/nginx/modules-enabled/05-mod-http-ndk.conf")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("NDK must be available but not enabled by default, got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "data", "logs")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("logs must not be stored under data, got %v", err)
-	}
-	for _, path := range []string{"config/postgres", "logs/php", "logs/valkey", "logs/mysql", "logs/postgres", "logs/nginx-ui"} {
+	for _, path := range []string{"config/valkey", "data/valkey", "config/postgres", "logs/php", "logs/redis", "logs/mysql", "logs/postgres", "logs/nginx-ui"} {
 		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("unused directory %s was created, got %v", path, err)
 		}
 	}
 
-	valkey := readFile(t, filepath.Join(root, "config/valkey/valkey.conf"))
-	if !strings.Contains(valkey, "bind 127.0.0.1\n") {
-		t.Fatalf("initial Valkey bind = %q", valkey)
+	redisConfig := readFile(t, filepath.Join(root, "config/redis/valkey.conf"))
+	if !strings.Contains(redisConfig, "bind 127.0.0.1\n") {
+		t.Fatalf("initial Redis bind = %q", redisConfig)
 	}
-	if strings.Contains(valkey, "0.0.0.0") {
-		t.Fatal("Valkey must not bind 0.0.0.0")
+	if strings.Contains(redisConfig, "0.0.0.0") {
+		t.Fatal("Redis must not bind 0.0.0.0")
 	}
-	if !strings.Contains(valkey, "maxmemory-policy allkeys-lru") {
-		t.Fatal("Valkey LRU policy missing")
+	if !strings.Contains(redisConfig, "maxmemory-policy allkeys-lru") {
+		t.Fatal("Redis LRU policy missing")
+	}
+
+	compose := readFile(t, filepath.Join(root, "compose.yaml"))
+	for _, want := range []string{
+		`image: "hicasper/webdock:nginx-1.26"`,
+		`image: "valkey/valkey:8"`,
+		`profiles: ["nginx"]`,
+		`profiles: ["redis"]`,
+		"container_name: webdock-redis",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.yaml missing %q", want)
+		}
 	}
 
 	keyPEM := []byte(readFile(t, filepath.Join(root, "config/nginx/ssl/default.key")))
@@ -95,17 +107,17 @@ func TestInitCreatesUsableLayout(t *testing.T) {
 
 func TestInitRejectsExistingInstance(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Init(root, "none"); err != nil {
+	if _, err := Init(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Init(root, "mysql"); !errors.Is(err, ErrAlreadyInitialized) {
+	if _, err := Init(root); !errors.Is(err, ErrAlreadyInitialized) {
 		t.Fatalf("second Init() error = %v, want ErrAlreadyInitialized", err)
 	}
 }
 
 func TestLoadRejectsInsecureEnvPermissions(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Init(root, "none"); err != nil {
+	if _, err := Init(root); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(filepath.Join(root, "webdock.env"), 0o644); err != nil {
@@ -128,31 +140,61 @@ func TestParseEnvRejectsDuplicatesAndInvalidLines(t *testing.T) {
 	}
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+func TestResolveComponentImagesAndDependencies(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting string
+		version string
+		image   string
+	}{
+		{ComponentNginx, "true", "1.26", "hicasper/webdock:nginx-1.26"},
+		{ComponentPHP, "8.4", "8.4", "hicasper/webdock:php-8.4"},
+		{ComponentRedis, "7", "7", "valkey/valkey:7"},
+		{ComponentMySQL, "8.4", "8.4", "mysql:8.4"},
+		{ComponentPostgres, "17", "17", "tensorchord/vchord-suite:pg17-latest"},
 	}
-	return string(data)
+	for _, tt := range tests {
+		component, err := ResolveComponent(tt.name, tt.setting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if component.Version != tt.version || component.Image != tt.image {
+			t.Fatalf("%s = %+v", tt.name, component)
+		}
+	}
+	if _, err := ResolveComponent(ComponentMySQL, "bad/version"); err == nil {
+		t.Fatal("invalid version was accepted")
+	}
+
+	values := Values{
+		"ENABLE_NGINX":    "false",
+		"ENABLE_PHP":      "true",
+		"ENABLE_REDIS":    "false",
+		"ENABLE_MYSQL":    "false",
+		"ENABLE_POSTGRES": "false",
+	}
+	if _, err := ParseComponents(values); err == nil || !strings.Contains(err.Error(), "php requires nginx") {
+		t.Fatalf("ParseComponents() error = %v", err)
+	}
 }
 
-func TestSetDBEnginePreservesSecretsAndPermissions(t *testing.T) {
+func TestSetComponentStatePreservesSecretsAndPermissions(t *testing.T) {
 	root := t.TempDir()
-	cfg, err := Init(root, "none")
+	cfg, err := Init(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeSecret := cfg.Values["VALKEY_PASSWORD"]
-	next, err := SetDBEngine(root, "mysql")
+	beforeSecret := cfg.Values["REDIS_PASSWORD"]
+	next, err := SetComponentState(root, ComponentMySQL, "8.4")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.DBEngine() != "mysql" {
-		t.Fatalf("DB engine = %q", next.DBEngine())
+	mysql, ok := next.Component(ComponentMySQL)
+	if !ok || !mysql.Enabled || mysql.Version != "8.4" {
+		t.Fatalf("mysql component = %+v", mysql)
 	}
-	if next.Values["VALKEY_PASSWORD"] != beforeSecret {
-		t.Fatal("Valkey secret changed")
+	if next.Values["REDIS_PASSWORD"] != beforeSecret {
+		t.Fatal("Redis secret changed")
 	}
 	info, err := os.Stat(filepath.Join(root, "webdock.env"))
 	if err != nil {
@@ -161,4 +203,46 @@ func TestSetDBEnginePreservesSecretsAndPermissions(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("webdock.env mode = %04o, want 0600", got)
 	}
+	if _, err := SetComponentState(root, ComponentPHP, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetComponentState(root, ComponentNginx, "false"); err == nil {
+		t.Fatal("disabled nginx while php enabled")
+	}
+}
+
+func TestDisabledComponentLayoutIsNotRequired(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "config", "mysql", "my.cnf")); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateLayout(cfg); err != nil {
+		t.Fatalf("disabled MySQL config blocked validation: %v", err)
+	}
+	if _, err := SetComponentState(root, ComponentMySQL, "true"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateLayout(cfg); err == nil {
+		t.Fatal("enabled MySQL accepted a missing config")
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

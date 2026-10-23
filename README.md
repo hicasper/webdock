@@ -1,29 +1,45 @@
 # Webdock
 
-Webdock 是一个面向单机 Linux 的轻量 Docker Compose 容器栈管理工具，用固定的实例目录管理 Nginx、PHP、Valkey 和可选数据库，适合替代传统 LNMP 的重复手工配置。
+Webdock 是一个面向单机 Linux 的轻量 Docker Compose 容器栈管理工具。它用固定的实例目录管理 Nginx、PHP、Redis、MySQL 和 PostgreSQL，适合替代传统 LNMP 的手工维护方式。
 
-项目目前处于 `0.x` 阶段，优先保证结构清晰、部署简单和备份可迁移，适合单机、小规模使用。
+项目目前处于 `0.x` 阶段，优先保证部署简单、组件可独立管理、数据可迁移。
 
 ## 主要能力
 
-- 一条命令初始化完整实例目录，配置、站点、数据、日志和备份彼此分离。
-- 管理 Nginx、PHP-FPM、Valkey、MySQL/PostgreSQL 的启停、状态和日志。
+- 一条命令初始化实例目录，配置、站点、数据、日志和备份彼此分离。
+- 每个组件通过 `webdock.env` 独立启用，新实例默认只启用 Nginx。
+- 支持整个容器栈启停，也可以单独启动、停止或重启某个组件。
 - 内置 Nginx UI，方便管理站点和 Nginx 配置。
-- MySQL 与 PostgreSQL 可选，可在不删除旧数据的情况下切换。
-- Valkey 默认开启认证、AOF 和内存限制，并支持受控的 Docker bridge 访问。
-- 支持离线备份与恢复，敏感文件、目录结构和软链接都会被校验。
+- Redis 组件使用 Valkey 官方镜像；MySQL 与 PostgreSQL 可以同时启用。
+- 支持离线完整备份、逐组件版本冲突恢复和数据库逻辑备份。
 
-## 组件
+## 组件与版本
 
-| 服务 | 当前系列 | 说明 |
-| --- | --- | --- |
-| `nginx` | Nginx 1.26 LTS 系列、Nginx UI 2.x | HTTP/HTTPS、配置管理和常用动态模块 |
-| `php` | PHP 8.4 系列 | PHP-FPM、Composer 和常用扩展 |
-| `valkey` | Valkey 8.x | 缓存、AOF 持久化和 ACL 认证 |
-| `mysql` | MySQL 8.4 LTS 系列 | 可选数据库 |
-| `postgres` | PostgreSQL 18.x | 可选数据库 |
+| 组件 | 默认版本 | 当前已验证版本 | 说明 |
+| --- | --- | --- | --- |
+| `nginx` | 1.26 | 1.26 | Nginx、Nginx UI 和常用动态模块 |
+| `php` | 8.4 | 8.4 | PHP-FPM、Composer 和常用扩展 |
+| `redis` | 8 | 7、8 | 使用 `valkey/valkey` 镜像 |
+| `mysql` | 8.4 | 8.4 | 可选数据库 |
+| `postgres` | 16 | 16、17、18 | 使用 `tensorchord/vchord-suite` 镜像 |
 
-Nginx 与 PHP 镜像统一发布在 [hicasper/webdock](https://hub.docker.com/r/hicasper/webdock)，按组件和主版本维护；升级时以兼容当前实例目录为前提。
+组件状态和版本直接写在 `webdock.env`：
+
+```text
+ENABLE_NGINX=true
+ENABLE_PHP=false
+ENABLE_REDIS=false
+ENABLE_MYSQL=false
+ENABLE_POSTGRES=false
+```
+
+- `false`：禁用组件。
+- `true`：启用并使用默认版本。
+- 具体版本：启用并使用指定版本，例如 `ENABLE_MYSQL=8.4`。
+
+Webdock 会把组件和版本拼接成镜像并检查是否可用，不维护额外的版本白名单。未验证的镜像标签可能被接受，但不在当前支持范围内。
+
+Redis 从 7 开始支持；MySQL 5.7 已停止维护，不列为支持版本。
 
 ## 环境要求
 
@@ -32,11 +48,11 @@ Nginx 与 PHP 镜像统一发布在 [hicasper/webdock](https://hub.docker.com/r/
 - Docker Compose v2
 - 建议至少 1 vCPU、512 MB 内存；启用数据库时需预留额外内存
 
-不支持 Docker Desktop、rootless Docker、Podman 或 SELinux 强制模式。启动前请停止占用 80/443、9000、9001、6379 或所选数据库端口的旧服务。
+不支持 Docker Desktop、rootless Docker、Podman 或 SELinux 强制模式。启动前请停止占用 80/443、9000、9001、6379、3306 或 5432 的旧服务。
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/hicasper/webdock/releases) 下载对应架构的 `webdock-linux-amd64` 或 `webdock-linux-arm64`。Release 中的二进制会随代码更新而覆盖，具体构建信息见同页的 `build-info.txt`。
+从 [GitHub Releases](https://github.com/hicasper/webdock/releases) 下载对应架构的 `webdock-linux-amd64` 或 `webdock-linux-arm64`。
 
 ```bash
 chmod +x webdock-linux-amd64
@@ -44,106 +60,111 @@ sudo install -m 0755 webdock-linux-amd64 /usr/local/bin/webdock
 webdock --version
 ```
 
-也可以使用对应的 `.sha256` 文件校验下载内容。
+也可以使用同页的 `.sha256` 文件校验下载内容。
 
 ## 快速开始
 
 ```bash
-webdock init /srv/webdock --db none
+webdock init /srv/webdock
 cd /srv/webdock
 webdock doctor
 webdock up
 webdock status
 ```
 
-初始化会生成随机凭据、默认证书、Nginx 配置和 Compose 文件。保存凭据的 `webdock.env` 必须保持 `0600` 权限，也不要提交到版本库。
-
-需要数据库时，可在初始化时选择，或稍后切换：
+初始化后默认只运行 Nginx。需要 PHP、Redis 或数据库时：
 
 ```bash
-webdock init /srv/webdock --db mysql
-webdock -C /srv/webdock db use postgres
-webdock -C /srv/webdock db use none
+webdock enable php
+webdock enable redis
+webdock enable mysql 8.4
+webdock up
 ```
 
-切换数据库只会启停对应服务，不会删除或迁移另一套数据库数据。
+`webdock enable <component>` 使用默认版本；`webdock enable <component> <version>` 使用指定版本。启用或禁用命令只修改持久状态，运行中的容器由 `up`、`start`、`stop` 或 `restart` 控制。
 
-## Nginx UI
-
-Nginx UI 只监听 `127.0.0.1:9001`，建议通过 SSH 隧道访问：
-
-```bash
-webdock -C /srv/webdock ui
-ssh -L 9001:127.0.0.1:9001 <user>@<server>
-```
-
-然后打开 <http://127.0.0.1:9001>。Nginx UI 负责管理实例中的 Nginx 配置；Webdock 负责目录、挂载和进程守护。
+PHP 必须与 Nginx 一起使用。启用 PHP 前需要启用 Nginx，PHP 容器启动时也要求 Nginx 正在运行。
 
 ## 常用命令
 
-以下命令默认在实例目录中执行；也可以统一使用 `webdock -C /srv/webdock <command>`。
+以下命令默认在当前实例目录执行，也可以用 `webdock -C /srv/webdock <command>`。
 
 | 命令 | 用途 |
 | --- | --- |
-| `webdock version` | 查看当前版本 |
-| `webdock up [--pull]` | 启动或更新容器栈 |
-| `webdock down` | 停止并移除容器栈 |
-| `webdock restart` | 重启容器栈 |
-| `webdock status` | 查看服务状态 |
-| `webdock logs [service]` | 查看并跟随日志 |
+| `webdock init [DIR]` | 初始化实例，默认只启用 Nginx |
+| `webdock enable <component> [version]` | 持久启用组件，可指定版本 |
+| `webdock disable <component>` | 持久禁用组件 |
+| `webdock up [--pull]` | 启动或收敛全部已启用组件 |
+| `webdock down` | 停止并移除整个容器栈 |
+| `webdock start <component>` | 启动一个已启用组件 |
+| `webdock stop <component>` | 临时停止一个组件，不改变启用状态 |
+| `webdock restart [component]` | 重启运行中的组件 |
+| `webdock status` | 查看启用状态和容器状态 |
+| `webdock logs [component]` | 查看并跟随日志 |
 | `webdock doctor` | 检查端口、配置和服务健康状态 |
-| `webdock shell <service>` | 进入指定容器 |
-| `webdock ui` | 显示 Nginx UI 地址和隧道命令 |
-| `webdock backup` | 创建离线备份 |
-| `webdock restore --force <archive>` | 恢复备份 |
-
-管理非当前目录的实例：
-
-```bash
-webdock -C /srv/webdock status
-webdock -C /srv/webdock up
-```
+| `webdock shell <component>` | 进入指定容器 |
+| `webdock ui` | 显示 Nginx UI 地址和 SSH 隧道命令 |
+| `webdock db backup mysql\|postgres` | 在线导出数据库逻辑备份 |
+| `webdock backup` | 创建离线完整备份 |
+| `webdock restore --force <archive>` | 恢复完整备份 |
 
 ## 实例目录
 
 ```text
 /srv/webdock/
-├── webdock.env       # 凭据和运行参数
+├── webdock.env       # 凭据、组件状态和版本
 ├── compose.yaml      # Webdock 生成的 Compose 配置
-├── config/           # Nginx、PHP、Valkey、MySQL 配置
+├── config/
+│   ├── nginx/
+│   ├── php/
+│   ├── redis/
+│   └── mysql/
 ├── sites/            # 站点源码，挂载为 /var/www
-├── data/             # 服务持久化数据
+├── data/             # Nginx UI、Redis、MySQL、PostgreSQL 数据
 ├── logs/nginx/       # Nginx 文件日志
-└── backups/          # 默认备份目录
+└── backups/          # 完整备份和数据库逻辑备份
 ```
 
 `config/`、`data/` 和 `webdock.env` 是实例核心状态。迁移实例时应整体迁移这些内容，或使用 Webdock 备份功能。
 
 ## Nginx 与 PHP
 
-Nginx 提供 Debian 风格的站点、模块和 stream 配置目录。GeoIP2、Stream 和 Stream-GeoIP2 默认启用；Brotli、RTMP、Lua、Headers More 等模块已安装，需要时可在 `modules-enabled/` 中启用。默认站点返回 `444`，避免未配置域名直接暴露内容。
+Nginx 提供 Debian 风格的站点、模块和 stream 配置目录。GeoIP2、Stream 和 Stream-GeoIP2 默认启用；Brotli、RTMP、Lua、Headers More 等模块已安装，需要时可在 `modules-enabled/` 中启用。默认站点返回 `444`。
 
-Nginx 使用 100 秒 keepalive；TLS 禁用 1.0，保留 1.1，并启用 1.2/1.3。面向公网时可进一步按业务需要收紧 TLS 1.1。
+Nginx UI 只监听 `127.0.0.1:9001`，建议通过 SSH 隧道访问：
 
-PHP 镜像已包含 Composer 和 `bcmath`、`exif`、`gd`、`intl`、MySQL/PostgreSQL、Redis、sockets、zip 等常用扩展。实例默认关闭错误回显、开启错误日志；FPM 使用受限的动态进程池，限制单请求最长 60 秒并定期回收 worker，适合低内存单机。
-
-## Valkey
-
-Valkey 默认只监听回环地址，使用认证、AOF、`allkeys-lru` 和内存上限，避免意外占用整机内存。
-
-如需让其他 Docker bridge 网络访问，在 `webdock.env` 中配置：
-
-```text
-VALKEY_BRIDGE_NETWORKS=bridge,myproject_default
+```bash
+webdock ui
+ssh -L 9001:127.0.0.1:9001 <user>@<server>
 ```
 
-Webdock 只会绑定实际存在且属于本机的网关地址，不会退化为监听 `0.0.0.0`。
+PHP 镜像包含 Composer 和常用扩展。PHP-FPM 只监听回环地址，使用受限的动态进程池，适合低内存单机。
 
-## 日志
+## Redis、MySQL 与 PostgreSQL
 
-- Nginx 日志位于 `logs/nginx/`，其中 access log 位置已预留。
-- 其他服务默认输出到 Docker stdout/stderr，由 json-file 驱动限制大小。
-- 使用 `webdock logs [service]` 查看，不需要进入容器。
+Redis 组件使用 Valkey 镜像，服务和目录名统一为 `redis`。默认只监听回环地址和经检测属于本机的 Docker bridge 网关，使用 ACL、AOF 和 `allkeys-lru`。
+
+如需让其他 Docker bridge 网络访问 Redis，可修改：
+
+```text
+REDIS_BRIDGE_NETWORKS=bridge,myproject_default
+```
+
+Webdock 不会退化为监听 `0.0.0.0`。
+
+MySQL 和 PostgreSQL 可以独立启停，也可以同时运行：
+
+```bash
+webdock enable mysql
+webdock enable postgres
+webdock up
+webdock stop mysql
+webdock start mysql
+```
+
+数据库逻辑备份写入 `backups/db/`。MySQL 生成 `.sql.gz`，PostgreSQL 生成 `.dump`。
+
+Redis、MySQL 和 PostgreSQL 的 `data/<component>/.webdock-version` 记录已初始化的数据版本。配置版本变化时会提示确认；默认不继续启动，选择 `y` 后才会强制使用新版本，并在成功启动后更新标记。
 
 ## 备份与恢复
 
@@ -153,13 +174,18 @@ webdock backup --with-sites --with-logs
 webdock restore --force backups/webdock-YYYYMMDD-HHMMSS.tar.gz
 ```
 
-默认备份包含 `webdock.env`、`config/` 和 `data/`，不包含站点源码和日志。备份期间会停止容器栈，完成后恢复原运行状态。恢复会先校验归档，校验失败不会覆盖当前数据。
+默认备份包含 `webdock.env`、`config/` 和 `data/`，不包含站点源码和日志。备份期间会停止运行中的容器，完成后只恢复原本正在运行的组件。
 
-数据库和 Valkey 可能将文件权限调整为容器内 UID，建议使用 root 或具备完整目录读写权限的用户执行备份与恢复。
+归档中的 `manifest.json` 记录每个组件的启用版本。恢复时如果归档版本与当前实例不一致，会逐组件询问：
+
+- `y`：接受归档版本并恢复该组件的数据。
+- `n` 或直接回车：跳过当前组件，继续处理下一个组件。
+
+无效输入会重新提示；输入流结束会中止恢复，避免在非交互环境中误跳过组件。
 
 ## 安全提示
 
-- Nginx UI、PHP-FPM、数据库和 Valkey 均不直接监听公网地址。
+- Nginx UI、PHP-FPM、数据库和 Redis 均不直接监听公网地址。
 - Nginx 使用 host 网络，最终暴露端口由实例中的 Nginx 配置决定。
 - 备份包含密码和全部服务数据，应按敏感文件保存。
 - `restore --force` 会替换现有实例数据，执行前请确认归档来源。
