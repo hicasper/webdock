@@ -8,7 +8,7 @@
 
 Webdock 由一个轻量 Go CLI、一个生成的 Compose 实例和三个核心服务组成：
 
-- `nginx`：Nginx 1.26 + Nginx UI，s6-overlay 管理两个进程。
+- `nginx`：Nginx 1.26 + Nginx UI，s6-overlay 管理两个进程；服务通过标准 `user-bundles.d` 布局注册。
 - `php`：PHP 8.4 FPM。
 - `valkey`：Valkey 8。
 - 可选 `mysql` 8.4 或 `postgres` 18。
@@ -310,7 +310,7 @@ Nginx UI 自身升级随 nginx 镜像进行，不使用应用内 OTA。
 logs/nginx/error.log
 ```
 
-镜像安装 `logrotate`，提供每日轮转、保留 7 份、压缩的配置，并启用 Nginx UI 的 logrotate 任务。站点需要 access log 时由用户自行开启。
+镜像安装 `logrotate`，提供每日轮转、保留 7 份、压缩的配置，并由 Nginx UI 内置定时任务直接调用，不运行 cron/systemd。安装时显式选择 `anacron` 满足 `logrotate` 的 Debian 调度器依赖，避免引入更重的依赖链。站点需要 access log 时由用户自行开启。
 
 ## 7. PHP
 

@@ -58,12 +58,15 @@ COPY rootfs/ /
 
 FROM debian:trixie-slim
 ARG DEBIAN_FRONTEND=noninteractive
+# Nginx UI invokes logrotate directly. Selecting anacron satisfies logrotate's
+# scheduler dependency without pulling cron and its systemd dependency chain.
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         logrotate \
+        anacron \
         nginx \
         libnginx-mod-http-brotli-filter \
         libnginx-mod-http-brotli-static \

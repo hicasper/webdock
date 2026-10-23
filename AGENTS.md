@@ -126,9 +126,9 @@ Valkey 模板只接收密码哈希，不把明文密码写入 `config/valkey/val
 基础为 `debian:trixie-slim`。一个构建阶段下载并校验 Nginx UI 发布包，另一个阶段安装 s6-overlay，最终阶段安装 Debian 提供的 Nginx 1.26 系列和动态模块。
 
 - Nginx UI 默认版本和 SHA256 位于 Dockerfile 的 `ARG`；升级时同时更新 amd64/arm64 哈希和 `tests/images_test.go` 中相关契约。
-- `rootfs/etc/s6-overlay/` 中定义 Nginx 与 Nginx UI 两个长期服务；Nginx 使用 `daemon off`，Nginx UI 以 `umask 077` 启动并收紧持久文件权限。
+- `rootfs/etc/s6-overlay/s6-rc.d/` 中定义 Nginx 与 Nginx UI 两个长期服务；服务名以空文件注册到 `rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/`。不要改回已弃用的 `s6-rc.d/user/contents.d/`。Nginx 使用 `daemon off`，Nginx UI 以 `umask 077` 启动并收紧持久文件权限。
 - Nginx UI 在构建阶段使用 `strip --strip-unneeded` 去除 Go 符号表，并在同一阶段执行版本冒烟测试后卸载 `binutils`；不要把构建工具带进最终镜像。
-- `rootfs/etc/logrotate.d/nginx` 负责容器内 Nginx 日志轮转。
+- `rootfs/etc/logrotate.d/nginx` 由 Nginx UI 内置定时任务直接调用，不依赖 cron/systemd。安装 `logrotate` 时显式选择 `anacron` 满足其调度器依赖，避免拉入 `cron` 和 `systemd`；`anacron` 同样不启动，不要改成删除依赖包或自行实现日志轮转。
 - 不要默认启动所有动态模块。默认启用 GeoIP2、Stream、Stream-GeoIP2，RTMP 等模块保留在 `modules-available/`。
 - Nginx UI 的端口、工作目录和 Nginx 配置目录由 Compose 环境变量传入；不要重新设计其内部配置。
 
@@ -140,7 +140,7 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 
 ### `tests`
 
-`images_test.go` 是不需要 Docker daemon 的契约测试，覆盖镜像组件、PHP 扩展、Nginx 基线、健康检查不泄漏密码、PHP 配置单一来源等。修改镜像或模板时要先扩展这些测试，再实现变更。
+`images_test.go` 是不需要 Docker daemon 的契约测试，覆盖镜像组件、s6 服务布局、PHP 扩展、Nginx 基线、健康检查不泄漏密码、PHP 配置单一来源等。修改镜像或模板时要先扩展这些测试，再实现变更。
 
 真实 Docker 集成测试需要 Linux runner；本地通过 `runner-info.test` 连接的 runner 只能作为人工验证环境，不能把凭据或 runner 文件带回仓库。
 

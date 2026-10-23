@@ -23,6 +23,7 @@ func TestNginxImageIncludesRequestedComponents(t *testing.T) {
 		"libnginx-mod-rtmp",
 		"libnginx-mod-http-lua",
 		"logrotate",
+		"anacron",
 		"binutils",
 		"strip --strip-unneeded /out/nginx-ui",
 		"/out/nginx-ui --version",
@@ -58,6 +59,36 @@ func TestNginxUIRunProtectsPersistentSecrets(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("nginx-ui run script missing %q", want)
 		}
+	}
+}
+
+func TestS6ServicesUseStandardBundleLayout(t *testing.T) {
+	for _, name := range []string{"nginx", "nginx-ui"} {
+		t.Run(name, func(t *testing.T) {
+			registration := read(t, "../images/nginx/rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/"+name)
+			if registration != "" {
+				t.Fatalf("s6 bundle registration for %s must be empty, got %q", name, registration)
+			}
+
+			serviceType := strings.TrimSpace(read(t, "../images/nginx/rootfs/etc/s6-overlay/s6-rc.d/"+name+"/type"))
+			if serviceType != "longrun" {
+				t.Fatalf("s6 service %s type = %q, want longrun", name, serviceType)
+			}
+
+			runPath := "../images/nginx/rootfs/etc/s6-overlay/s6-rc.d/" + name + "/run"
+			info, err := os.Stat(runPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm()&0o111 == 0 {
+				t.Fatalf("s6 run script for %s is not executable", name)
+			}
+		})
+	}
+
+	legacyBundle := "../images/nginx/rootfs/etc/s6-overlay/s6-rc.d/user"
+	if _, err := os.Stat(legacyBundle); !os.IsNotExist(err) {
+		t.Fatalf("legacy s6 user bundle path must not exist: %v", err)
 	}
 }
 

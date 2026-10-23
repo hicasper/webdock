@@ -10,6 +10,8 @@
 - Nginx 与 PHP 镜像集中发布到同一个 `hicasper/webdock` 仓库，标签分别为 `nginx-1.26` 和 `php-8.4`；开发阶段直接覆盖，不发布 commit 或 Git tag 版本化标签。
 - Nginx UI 在构建阶段执行 `strip --strip-unneeded` 并立即冒烟测试，随后卸载构建工具；合并最终运行文件 COPY 层。
 - 删除 PHP 镜像中重复的 `php.ini` 和单独的 `composer --version` 构建层，PHP 配置只保留实例模板这一份来源。
+- Nginx 镜像显式选择 `anacron` 满足 `logrotate` 的调度器依赖，避免引入并保留未运行的 `cron` 和 `systemd` 依赖链。
+- s6 服务注册迁移到标准 `user-bundles.d/user/contents.d/` 空文件布局，移除对旧 `s6-rc.d/user` 兼容路径的依赖。
 
 ## [0.1.0] - 2026-10-22
 
