@@ -23,9 +23,9 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 - Redis 只能监听 `127.0.0.1` 和经本地接口验证过的 IPv4 Docker bridge 网关，绝不能退化到 `0.0.0.0`。
 - Nginx UI 自行管理 Nginx 配置和 reload/restart，不要在 Webdock 中另做一套 Nginx UI 配置控制器。
 - `webdock.env` 必须是普通文件且权限为 `0600`。任何新凭据都不得写入日志、进程参数或 Compose 的明文命令参数。
-- 默认备份包含 `webdock.env`、`config/`、`data/`；`sites/` 和 `logs/` 只在显式选项下包含。归档必须包含精简 `manifest.json`，每个组件的值只能是版本字符串或 `null`。
+- 默认备份包含 `webdock.env`、`config/`、`data/`；`sites/` 和 `logs/` 只在显式选项下包含。不生成独立 manifest；归档内的 `webdock.env` 表示组件启停与配置版本，`data/.webdock-versions` 表示状态型组件最后一次成功初始化的数据版本。
 - 恢复必须先在临时目录完成校验，再逐组件替换配置和数据。版本冲突时 `y` 接受归档版本，`n` 跳过该组件，EOF 中止整体恢复。
-- Redis、MySQL、PostgreSQL 的数据目录使用 `.webdock-version` 记录初始化版本；标记不一致时默认不启动，确认 `y` 后才能强制继续，且必须等启动和健康检查成功后再更新标记。
+- Redis、MySQL、PostgreSQL 的实际数据版本统一记录在 `data/.webdock-versions`；版本不一致时默认不启动，确认 `y` 后才能强制继续，且必须等启动和健康检查成功后再原子更新该文件。
 - 归档恢复可以保留实例内部的相对软链接，但必须拒绝绝对路径、越界目标、重复 entry，以及通过软链接父目录继续写入。
 - 镜像标签只保证大版本兼容，不锁 digest。Nginx 与 PHP 发布到同一个仓库，当前默认标签为 `hicasper/webdock:nginx-1.26` 和 `hicasper/webdock:php-8.4`；Redis 使用 `valkey/valkey:<version>`，PostgreSQL 使用 `tensorchord/vchord-suite:pg<version>-latest`。
 - 不提交 `runner-info.test`、`runner-key.test` 或其他 `runner-*.test` 文件；它们可能包含真实 runner 的访问信息。
@@ -77,7 +77,7 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 
 ### `internal/backup`
 
-创建归档时跳过 socket、`.sock`、`.sock.lock` 和 `.pid`，不跟随目录软链接，并写入 `manifest.json`。恢复分为 `PrepareRestore` 和 `RestoreStage.Apply` 两阶段：先解压、校验和交互决策，再停止容器并按键替换路径。回滚移动必须保持原子性和已跳过组件不变。
+创建归档时跳过 socket、`.sock`、`.sock.lock` 和 `.pid`，不跟随目录软链接。恢复分为 `PrepareRestore` 和 `RestoreStage.Apply` 两阶段：先解压、校验和交互决策，再停止容器并按键替换路径。组件版本从归档的 `webdock.env` 推导；`RestorePlan.Versions` 负责写入合并后的数据版本状态。回滚移动必须保持原子性和已跳过组件不变。
 
 `extract` 中的 `seen`、`validateEntry` 和 `ensureParentPath` 是安全边界。不要为了让某个归档“能解压”而放宽这些检查；应修正归档生成逻辑。
 
@@ -98,9 +98,10 @@ Webdock 是单机 Linux 上的轻量 Compose 容器栈管理工具，用来替�
 ### `internal/instance`
 
 - `init.go`：生成随机凭据、创建完整目录树、写入默认 Nginx/PHP/MySQL/Redis 配置、证书和 `webdock.env`。
-- `components.go`：五个组件的固定顺序、`ENABLE_*` 解析、默认版本、镜像拼接、PHP/Nginx 依赖、组件环境键/路径和状态更新。
+- `components.go`：五个组件的固定顺序、`ENABLE_*` 解析、默认版本、数据版本键、镜像拼接、PHP/Nginx 依赖、组件环境键/路径和状态更新。新增状态型组件时在同一组件描述中填写 `dataVersionKey`，不要另建组件注册表。
 - `env.go`：严格的 `KEY=VALUE` 解析、稳定排序输出和读取。不要加入隐式 shell 展开。
-- `validate.go`：运行前的关键文件存在性检查。改变实例布局时必须同步这里。
+- `versions.go`：统一读写 `data/.webdock-versions`，只接受组件描述声明的数据版本键。
+- `validate.go`：运行前检查关键文件并解析数据版本状态文件。改变实例布局时必须同步这里。
 - `cert.go`：生成仅用于默认站点的自签名 RSA 证书。
 
 初始化遵循“已存在用户文件不覆盖”。修改模板时不要改成每次启动强制覆盖实例配置。组件状态更新必须通过 `SetComponentState` 原子写回环境文件。
@@ -121,7 +122,7 @@ Redis 模板只接收密码哈希，不把明文密码写入 `config/redis/valke
 
 `templates/templates.go` 使用 `go:embed` 将整个模板树嵌入二进制。模板文件按相对路径读取，例如 `nginx/nginx.conf`。
 
-- `templates/compose/compose.yaml.tmpl`：五个带同名 profile 的服务、动态镜像、端口、健康检查、日志和固定挂载。
+- `templates/compose/compose.yaml.tmpl`：五个带同名 profile 的服务、动态镜像、端口、健康检查、日志和固定挂载。数据库挂载必须指向镜像声明的精确 `VOLUME` 路径；PostgreSQL 直接挂载 `data/postgres` 到 `/var/lib/postgresql/data`，Webdock 的版本状态统一放在 `data/.webdock-versions`，不能放回 PGDATA。
 - `templates/nginx/`：全局配置、默认站点、Debian 支持文件、模块入口和 FastCGI snippet。
 - `templates/php/php.ini`：通过 `embed.FS` 注入实例 `config/php/php.ini`。
 - `templates/mysql/my.cnf`：MySQL 的监听和禁用 mysqlx 配置。不要设置 `log_error = stderr`；MySQL 会把它当成数据目录下的 `stderr.err` 文件。保持官方镜像默认的 stderr 日志行为，避免日志进入数据备份。
@@ -191,6 +192,7 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 │   └── mysql/my.cnf
 ├── sites/
 ├── data/
+│   ├── .webdock-versions
 │   ├── nginx-ui/
 │   ├── redis/
 │   ├── mysql/
@@ -205,13 +207,13 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 
 ### Init
 
-`app.cmdInit` → `instance.Init` → `ensureDirectories` → `seedNginx`/`seedFile` → `render.RedisConfig` → `render.Compose` → 写入 `webdock.env`。默认只启用 Nginx；只要 `webdock.env` 已存在就视为已初始化，避免误覆盖。
+`app.cmdInit` → `instance.Init` → `ensureDirectories` → `seedNginx`/`seedFile` → `render.RedisConfig` → `render.Compose` → 初始化空的 `data/.webdock-versions` → 写入 `webdock.env`。默认只启用 Nginx；只要 `webdock.env` 已存在就视为已初始化，避免误覆盖。
 
 ### Up / Restart
 
 `enable/disable` 只更新持久状态。`up` 先校验布局和镜像，渲染 Redis bind 地址，检查端口冲突和 Compose preflight，停止已禁用但仍运行的组件，再按启用集合执行 `docker compose up -d --wait --wait-timeout 300`。随后通过 `nginx -t`、`php-fpm -t`、`valkey-cli`、`pg_isready`/`mysqladmin` 和监听规则验证运行时。若 Redis 配置需要重载且 Redis 已在运行，只重启 Redis。失败时恢复旧 Redis 配置。
 
-`start/stop/restart` 只作用于单个组件；`start php` 要求 Nginx 正在运行。Redis、MySQL、PostgreSQL 的 `.webdock-version` 与配置版本不同时必须交互确认，默认 n，成功后才更新标记。
+`start/stop/restart` 只作用于单个组件；`start php` 要求 Nginx 正在运行。Redis、MySQL、PostgreSQL 在 `data/.webdock-versions` 中记录的数据版本与配置版本不同时必须交互确认，默认 n，成功后才更新状态文件。
 
 ### 数据库备份
 
@@ -219,7 +221,7 @@ PHP 的 `php.ini` 只维护实例模板 `templates/php/php.ini`，通过 Compose
 
 ### Backup / Restore
 
-备份通过全部 profile 查询实际运行组件，必要时 Compose stop；归档完成后只重新启动原本运行的组件。归档写入单值组件版本 manifest。恢复先检测固定容器，再解压和校验 staging；版本不一致时逐组件询问 y/n。接受组件仅替换其配置和数据子目录，跳过组件保持原样；最后只启动“恢复前曾运行且恢复后仍启用”的组件。
+备份通过全部 profile 查询实际运行组件，必要时 Compose stop；归档完成后只重新启动原本运行的组件。恢复先检测固定容器，再解压和校验 staging；启用状态和配置版本来自归档 `webdock.env`，数据版本来自 `.webdock-versions`。版本不一致时逐组件询问 y/n，并合并版本状态以确保跳过组件不丢失记录。接受组件仅替换其配置和数据子目录，跳过组件保持原样；最后只启动“恢复前曾运行且恢复后仍启用”的组件。
 
 ## 安全与质量规则
 
@@ -273,6 +275,6 @@ webdock restore --force backups/<archive>.tar.gz
 webdock down
 ```
 
-对于生命周期、组件版本、数据库备份、备份恢复和网络发现的改动，必须补充 fake runner 单元测试；不要在单元测试中依赖宿主机 Docker。修改 `compose.yaml.tmpl`、实例目录或容器名时，必须同时检查 `tests/images_test.go`、`internal/app/app_test.go`、`internal/instance/instance_test.go`、`internal/render/render_test.go` 和 `internal/backup/manifest_test.go`。
+对于生命周期、组件版本、数据库备份、备份恢复和网络发现的改动，必须补充 fake runner 单元测试；不要在单元测试中依赖宿主机 Docker。修改 `compose.yaml.tmpl`、实例目录或容器名时，必须同时检查 `tests/images_test.go`、`internal/app/app_test.go`、`internal/instance/instance_test.go`、`internal/instance/versions_test.go`、`internal/render/render_test.go` 和 `internal/backup/archive_test.go`。
 
 改动完成后更新 `CHANGELOG.md`；尚未进入新版本的改动放入新的 `Unreleased` 段，不重写已发布的 `0.1.0` 记录。如果修改会影响用户安装、目录、命令、配置或端口，再同步 `README.md`。

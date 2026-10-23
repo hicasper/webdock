@@ -120,7 +120,7 @@ PHP 必须与 Nginx 一起使用。启用 PHP 前需要启用 Nginx，PHP 容器
 │   ├── redis/
 │   └── mysql/
 ├── sites/            # 站点源码，挂载为 /var/www
-├── data/             # Nginx UI、Redis、MySQL、PostgreSQL 数据
+├── data/             # 组件数据及 .webdock-versions
 ├── logs/nginx/       # Nginx 文件日志
 └── backups/          # 完整备份和数据库逻辑备份
 ```
@@ -164,7 +164,7 @@ webdock start mysql
 
 数据库逻辑备份写入 `backups/db/`。MySQL 生成 `.sql.gz`，PostgreSQL 生成 `.dump`。
 
-Redis、MySQL 和 PostgreSQL 的 `data/<component>/.webdock-version` 记录已初始化的数据版本。配置版本变化时会提示确认；默认不继续启动，选择 `y` 后才会强制使用新版本，并在成功启动后更新标记。
+Redis、MySQL 和 PostgreSQL 的实际数据版本集中记录在 `data/.webdock-versions`。配置版本变化时会提示确认；默认不继续启动，选择 `y` 后才会强制使用新版本，并在成功启动后更新记录。
 
 ## 备份与恢复
 
@@ -176,7 +176,7 @@ webdock restore --force backups/webdock-YYYYMMDD-HHMMSS.tar.gz
 
 默认备份包含 `webdock.env`、`config/` 和 `data/`，不包含站点源码和日志。备份期间会停止运行中的容器，完成后只恢复原本正在运行的组件。
 
-归档中的 `manifest.json` 记录每个组件的启用版本。恢复时如果归档版本与当前实例不一致，会逐组件询问：
+归档中的 `webdock.env` 和 `data/.webdock-versions` 记录组件配置与实际数据版本，不再生成额外的 manifest 文件。恢复时如果归档版本与当前实例不一致，会逐组件询问：
 
 - `y`：接受归档版本并恢复该组件的数据。
 - `n` 或直接回车：跳过当前组件，继续处理下一个组件。

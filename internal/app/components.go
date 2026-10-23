@@ -2,40 +2,27 @@ package app
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"webdock/internal/instance"
-	"webdock/internal/render"
 )
 
-var versionedComponents = map[string]bool{
-	instance.ComponentRedis:    true,
-	instance.ComponentMySQL:    true,
-	instance.ComponentPostgres: true,
-}
-
-func (a *App) checkVersionMarkers(cfg instance.Config, names []string) error {
+func (a *App) checkDataVersions(cfg instance.Config, names []string) error {
+	versions, err := instance.LoadVersionState(cfg.Root)
+	if err != nil {
+		return err
+	}
 	for _, name := range names {
-		if !versionedComponents[name] {
+		key, ok := instance.VersionStateKey(name)
+		if !ok {
 			continue
 		}
 		component, ok := cfg.Component(name)
 		if !ok || !component.Enabled {
 			continue
 		}
-		path := versionMarkerPath(cfg.Root, name)
-		data, err := os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("read %s version marker: %w", name, err)
-		}
-		previous := strings.TrimSpace(string(data))
+		previous := strings.TrimSpace(versions[key])
 		if previous == "" || previous == component.Version {
 			continue
 		}
@@ -53,32 +40,34 @@ func (a *App) checkVersionMarkers(cfg instance.Config, names []string) error {
 	return nil
 }
 
-func (a *App) recordVersionMarkers(cfg instance.Config, names []string) error {
+func (a *App) recordDataVersions(cfg instance.Config, names []string) error {
+	versions, err := instance.LoadVersionState(cfg.Root)
+	if err != nil {
+		return err
+	}
+	changed := false
 	for _, name := range names {
-		if !versionedComponents[name] {
+		key, ok := instance.VersionStateKey(name)
+		if !ok {
 			continue
 		}
 		component, ok := cfg.Component(name)
 		if !ok || !component.Enabled {
 			continue
 		}
-		path := versionMarkerPath(cfg.Root, name)
-		data, err := os.ReadFile(path)
-		if err == nil && strings.TrimSpace(string(data)) == component.Version {
+		if strings.TrimSpace(versions[key]) == component.Version {
 			continue
 		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("read %s version marker: %w", name, err)
-		}
-		if err := render.WriteFile(path, []byte(component.Version+"\n"), 0o644); err != nil {
-			return fmt.Errorf("record %s version marker: %w", name, err)
-		}
+		versions[key] = component.Version
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	if err := instance.WriteVersionState(cfg.Root, versions); err != nil {
+		return fmt.Errorf("record data version state: %w", err)
 	}
 	return nil
-}
-
-func versionMarkerPath(root, name string) string {
-	return filepath.Join(root, "data", name, ".webdock-version")
 }
 
 func (a *App) confirm(prompt string) (bool, error) {

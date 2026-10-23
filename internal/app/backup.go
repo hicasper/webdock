@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"webdock/internal/backup"
@@ -42,11 +41,10 @@ func (a *App) cmdBackup(ctx context.Context, cfg instance.Config, args []string)
 	}
 	now := time.Now().UTC()
 	destination := filepath.Join(cfg.Root, "backups", backupFilename(cfg.Root, now))
-	manifest := backupManifest(cfg, a.Version, now)
 	archiveErr := backup.Create(cfg.Root, destination, backup.Options{
 		WithSites: *withSites,
 		WithLogs:  *withLogs,
-	}, manifest)
+	})
 	var restartErr error
 	if len(runningBefore) != 0 {
 		restartErr = a.startComponents(ctx, cfg, mapKeys(runningBefore), startOptions{forceRecreate: true})
@@ -62,23 +60,6 @@ func (a *App) cmdBackup(ctx context.Context, cfg instance.Config, args []string)
 	}
 	fmt.Fprintf(a.Stdout, "Backup written to %s\n", destination)
 	return nil
-}
-
-func backupManifest(cfg instance.Config, version string, now time.Time) backup.Manifest {
-	components := make(map[string]*string, len(cfg.Components))
-	for _, component := range cfg.Components {
-		if !component.Enabled {
-			components[component.Name] = nil
-			continue
-		}
-		value := component.Version
-		components[component.Name] = &value
-	}
-	return backup.Manifest{
-		CreatedAt:      now.Format(time.RFC3339),
-		WebdockVersion: version,
-		Components:     components,
-	}
 }
 
 func (a *App) cmdRestore(ctx context.Context, root string, args []string) error {
@@ -150,19 +131,12 @@ func (a *App) cmdRestore(ctx context.Context, root string, args []string) error 
 	}
 	defer stage.Close()
 
-	manifest, err := backup.LoadManifest(stage.Root())
-	if err != nil {
-		return err
-	}
-	if err := manifest.Validate(instance.ComponentNames()); err != nil {
-		return err
-	}
 	stageCfg, err := instance.Load(stage.Root())
 	if err != nil {
 		return err
 	}
 
-	keepCurrent, accepted, err := a.restoreDecisions(current, currentOK, manifest)
+	keepCurrent, accepted, err := a.restoreDecisions(current, currentOK, stageCfg)
 	if err != nil {
 		return err
 	}
@@ -174,25 +148,12 @@ func (a *App) cmdRestore(ctx context.Context, root string, args []string) error 
 	if currentOK {
 		mergedValues = instance.MergeComponentEnvironment(stageCfg.Values, current.Values, keepCurrent)
 	}
-	for _, name := range instance.ComponentNames() {
-		if manifestVersion(manifest, name) != "" {
-			continue
-		}
-		key, ok := instance.ComponentEnvKey(name)
-		if !ok {
-			return fmt.Errorf("component %s has no environment key", name)
-		}
-		mergedValues[key] = "false"
-	}
-	for _, component := range accepted {
-		key, ok := instance.ComponentEnvKey(component.Name)
-		if !ok {
-			return fmt.Errorf("component %s has no environment key", component.Name)
-		}
-		mergedValues[key] = component.Version
-	}
 	if _, err := instance.ValidateEnvironment(mergedValues); err != nil {
 		return fmt.Errorf("merged restore environment is invalid: %w", err)
+	}
+	mergedVersions, err := mergedRestoreVersionState(root, currentOK, stage.Root(), accepted)
+	if err != nil {
+		return err
 	}
 
 	replace := make([]string, 0, 12)
@@ -205,8 +166,9 @@ func (a *App) cmdRestore(ctx context.Context, root string, args []string) error 
 		}
 	}
 	plan := backup.RestorePlan{
-		Env:     instance.RenderEnv(mergedValues),
-		Replace: replace,
+		Env:      instance.RenderEnv(mergedValues),
+		Versions: instance.RenderVersionState(mergedVersions),
+		Replace:  replace,
 	}
 
 	if len(runningBefore) != 0 {
@@ -251,7 +213,7 @@ func (a *App) cmdRestore(ctx context.Context, root string, args []string) error 
 		if err := a.startComponents(ctx, cfg, restartNames, startOptions{forceRecreate: true}); err != nil {
 			return fmt.Errorf("restored data but failed to start stack: %w", err)
 		}
-		if err := a.recordVersionMarkers(cfg, restartNames); err != nil {
+		if err := a.recordDataVersions(cfg, restartNames); err != nil {
 			return err
 		}
 	}
@@ -262,29 +224,25 @@ func (a *App) cmdRestore(ctx context.Context, root string, args []string) error 
 	return nil
 }
 
-func (a *App) restoreDecisions(current instance.Config, currentOK bool, manifest backup.Manifest) (keep []string, accepted []instance.Component, err error) {
+func (a *App) restoreDecisions(current instance.Config, currentOK bool, archived instance.Config) (keep []string, accepted []instance.Component, err error) {
 	for _, name := range instance.ComponentNames() {
-		version := manifestVersion(manifest, name)
-		if version == "" {
+		archivedComponent, ok := archived.Component(name)
+		if !ok {
+			return nil, nil, fmt.Errorf("archive is missing component %s", name)
+		}
+		if !archivedComponent.Enabled {
 			if currentOK {
 				keep = append(keep, name)
 			}
 			continue
 		}
-		if strings.EqualFold(version, "true") || strings.EqualFold(version, "false") {
-			return nil, nil, fmt.Errorf("invalid manifest version for %s", name)
-		}
-		archived, err := instance.ResolveComponent(name, version)
-		if err != nil || !archived.Enabled {
-			return nil, nil, fmt.Errorf("invalid manifest version for %s", name)
-		}
 		if !currentOK {
-			accepted = append(accepted, archived)
+			accepted = append(accepted, archivedComponent)
 			continue
 		}
 		currentComponent, _ := current.Component(name)
-		if currentComponent.Enabled && currentComponent.Version == archived.Version {
-			accepted = append(accepted, archived)
+		if currentComponent.Enabled && currentComponent.Version == archivedComponent.Version {
+			accepted = append(accepted, archivedComponent)
 			continue
 		}
 		display := "false"
@@ -293,13 +251,13 @@ func (a *App) restoreDecisions(current instance.Config, currentOK bool, manifest
 		}
 		overwrite, err := a.confirm(fmt.Sprintf(
 			"%s: backup uses %s, current uses %s. Restore %s data and change version? [y/N] ",
-			name, archived.Version, display, archived.Version,
+			name, archivedComponent.Version, display, archivedComponent.Version,
 		))
 		if err != nil {
 			return nil, nil, err
 		}
 		if overwrite {
-			accepted = append(accepted, archived)
+			accepted = append(accepted, archivedComponent)
 		} else {
 			keep = append(keep, name)
 		}
@@ -307,12 +265,33 @@ func (a *App) restoreDecisions(current instance.Config, currentOK bool, manifest
 	return keep, accepted, nil
 }
 
-func manifestVersion(manifest backup.Manifest, name string) string {
-	value := manifest.Components[name]
-	if value == nil {
-		return ""
+func mergedRestoreVersionState(root string, currentOK bool, stage string, accepted []instance.Component) (instance.Values, error) {
+	merged := make(instance.Values)
+	if currentOK {
+		current, err := instance.LoadVersionState(root)
+		if err != nil {
+			return nil, err
+		}
+		for key, version := range current {
+			merged[key] = version
+		}
 	}
-	return strings.TrimSpace(*value)
+	archived, err := instance.LoadVersionState(stage)
+	if err != nil {
+		return nil, err
+	}
+	for _, component := range accepted {
+		key, ok := instance.VersionStateKey(component.Name)
+		if !ok {
+			continue
+		}
+		if version, ok := archived[key]; ok {
+			merged[key] = version
+		} else {
+			delete(merged, key)
+		}
+	}
+	return merged, nil
 }
 
 func loadExistingConfig(root string) (instance.Config, bool, error) {

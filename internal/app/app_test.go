@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"webdock/internal/backup"
 	"webdock/internal/doctor"
@@ -65,15 +64,21 @@ func initInstance(t *testing.T) string {
 
 func createBackup(t *testing.T, root string) string {
 	t.Helper()
-	cfg, err := instance.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
-	if err := backup.Create(root, archive, backup.Options{}, backupManifest(cfg, "test", time.Now().UTC())); err != nil {
+	if err := backup.Create(root, archive, backup.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	return archive
+}
+
+func stoppedStackRunner() *fakeRunner {
+	return &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		if call == "docker network inspect bridge" {
+			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
+		}
+		return nil, nil
+	}}
 }
 
 func imageOK(name string, args []string) ([]byte, error) {
@@ -218,7 +223,7 @@ func TestStartPHPRequiresNginxRunning(t *testing.T) {
 	}
 }
 
-func TestVersionMarkerConfirmation(t *testing.T) {
+func TestDataVersionConfirmation(t *testing.T) {
 	root := initInstance(t)
 	if _, err := instance.SetComponentState(root, instance.ComponentNginx, "false"); err != nil {
 		t.Fatal(err)
@@ -226,8 +231,7 @@ func TestVersionMarkerConfirmation(t *testing.T) {
 	if _, err := instance.SetComponentState(root, instance.ComponentRedis, "true"); err != nil {
 		t.Fatal(err)
 	}
-	marker := filepath.Join(root, "data", "redis", ".webdock-version")
-	if err := os.WriteFile(marker, []byte("7\n"), 0o644); err != nil {
+	if err := instance.WriteVersionState(root, instance.Values{"REDIS": "7"}); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
@@ -255,12 +259,12 @@ func TestVersionMarkerConfirmation(t *testing.T) {
 	if code := a.Run(context.Background(), []string{"-C", root, "up"}); code != 0 {
 		t.Fatalf("up exit = %d, stderr = %s", code, stderr.String())
 	}
-	data, err := os.ReadFile(marker)
+	versions, err := instance.LoadVersionState(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(data)) != "8" {
-		t.Fatalf("marker = %q", data)
+	if versions["REDIS"] != "8" {
+		t.Fatalf("redis data version = %q", versions["REDIS"])
 	}
 
 	cancelRoot := initInstance(t)
@@ -270,8 +274,7 @@ func TestVersionMarkerConfirmation(t *testing.T) {
 	if _, err := instance.SetComponentState(cancelRoot, instance.ComponentRedis, "true"); err != nil {
 		t.Fatal(err)
 	}
-	cancelMarker := filepath.Join(cancelRoot, "data", "redis", ".webdock-version")
-	if err := os.WriteFile(cancelMarker, []byte("7\n"), 0o644); err != nil {
+	if err := instance.WriteVersionState(cancelRoot, instance.Values{"REDIS": "7"}); err != nil {
 		t.Fatal(err)
 	}
 	stdout.Reset()
@@ -282,12 +285,12 @@ func TestVersionMarkerConfirmation(t *testing.T) {
 	if code == 0 || !strings.Contains(stderr.String(), "startup cancelled") {
 		t.Fatalf("cancel exit = %d, stderr = %q", code, stderr.String())
 	}
-	data, err = os.ReadFile(cancelMarker)
+	versions, err = instance.LoadVersionState(cancelRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(data)) != "7" {
-		t.Fatalf("cancelled run changed marker to %q", data)
+	if versions["REDIS"] != "7" {
+		t.Fatalf("cancelled run changed redis data version to %q", versions["REDIS"])
 	}
 }
 
@@ -379,30 +382,12 @@ func TestBackupRestartsOnlyPreviouslyRunningComponents(t *testing.T) {
 	}
 }
 
-func TestBackupManifestRecordsResolvedVersions(t *testing.T) {
-	root := initInstance(t)
-	if _, err := instance.SetComponentState(root, instance.ComponentPHP, "true"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := instance.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest := backupManifest(cfg, "0.2.0", time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC))
-	if got := manifestVersion(manifest, instance.ComponentNginx); got != "1.26" {
-		t.Fatalf("nginx manifest version = %q", got)
-	}
-	if got := manifestVersion(manifest, instance.ComponentPHP); got != "8.4" {
-		t.Fatalf("php manifest version = %q", got)
-	}
-	if got := manifestVersion(manifest, instance.ComponentRedis); got != "" {
-		t.Fatalf("disabled redis manifest version = %q", got)
-	}
-}
-
 func TestRestoreVersionMismatchNoKeepsCurrentComponent(t *testing.T) {
 	source := initInstance(t)
 	if _, err := instance.SetComponentState(source, instance.ComponentMySQL, "8.4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.WriteVersionState(source, instance.Values{"MYSQL": "8.4"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "data", "mysql", "archive-data"), []byte("archive"), 0o600); err != nil {
@@ -414,24 +399,13 @@ func TestRestoreVersionMismatchNoKeepsCurrentComponent(t *testing.T) {
 	if _, err := instance.SetComponentState(target, instance.ComponentMySQL, "5.7"); err != nil {
 		t.Fatal(err)
 	}
+	if err := instance.WriteVersionState(target, instance.Values{"MYSQL": "5.7"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(target, "data", "mysql", "current-data"), []byte("current"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		switch {
-		case call == "docker ps --all --format {{.Names}}\t{{.State}}":
-			return nil, nil
-		case call == "docker network inspect bridge":
-			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
-		case strings.Contains(call, " image inspect "):
-			return nil, nil
-		case strings.Contains(call, " ps --status running --services"):
-			return nil, nil
-		default:
-			return nil, nil
-		}
-	}}
+	runner := stoppedStackRunner()
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
 	a.Stdin = strings.NewReader("n\n")
@@ -452,11 +426,21 @@ func TestRestoreVersionMismatchNoKeepsCurrentComponent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(target, "data", "mysql", "archive-data")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("archive mysql data was copied despite n: %v", err)
 	}
+	versions, err := instance.LoadVersionState(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versions["MYSQL"] != "5.7" {
+		t.Fatalf("skipped MySQL data version = %q", versions["MYSQL"])
+	}
 }
 
 func TestRestoreVersionMismatchYesAcceptsArchiveComponent(t *testing.T) {
 	source := initInstance(t)
 	if _, err := instance.SetComponentState(source, instance.ComponentMySQL, "8.4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.WriteVersionState(source, instance.Values{"MYSQL": "8.4"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "data", "mysql", "archive-data"), []byte("archive"), 0o600); err != nil {
@@ -468,25 +452,13 @@ func TestRestoreVersionMismatchYesAcceptsArchiveComponent(t *testing.T) {
 	if _, err := instance.SetComponentState(target, instance.ComponentMySQL, "5.7"); err != nil {
 		t.Fatal(err)
 	}
+	if err := instance.WriteVersionState(target, instance.Values{"MYSQL": "5.7"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(target, "data", "mysql", "current-data"), []byte("current"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runner := &fakeRunner{handle: func(name string, args []string) ([]byte, error) {
-		call := strings.Join(append([]string{name}, args...), " ")
-		if call == "docker ps --all --format {{.Names}}\t{{.State}}" {
-			return nil, nil
-		}
-		if call == "docker network inspect bridge" {
-			return []byte(`[{"IPAM":{"Config":[]}}]`), nil
-		}
-		if strings.Contains(call, " image inspect ") {
-			return nil, nil
-		}
-		if strings.Contains(call, " ps --status running --services") {
-			return nil, nil
-		}
-		return nil, nil
-	}}
+	runner := stoppedStackRunner()
 	var stdout, stderr bytes.Buffer
 	a := testApp(&stdout, &stderr, runner)
 	a.Stdin = strings.NewReader("y\n")
@@ -506,6 +478,38 @@ func TestRestoreVersionMismatchYesAcceptsArchiveComponent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "data", "mysql", "current-data")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("current mysql data remains after y: %v", err)
+	}
+	versions, err := instance.LoadVersionState(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versions["MYSQL"] != "8.4" {
+		t.Fatalf("accepted MySQL data version = %q", versions["MYSQL"])
+	}
+}
+
+func TestMergedRestoreVersionStatePreservesSkippedComponents(t *testing.T) {
+	currentRoot := initInstance(t)
+	stageRoot := initInstance(t)
+	if err := instance.WriteVersionState(currentRoot, instance.Values{
+		"REDIS": "7", "MYSQL": "5.7", "POSTGRES": "16",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.WriteVersionState(stageRoot, instance.Values{
+		"REDIS": "8", "MYSQL": "8.4", "POSTGRES": "16",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := mergedRestoreVersionState(currentRoot, true, stageRoot, []instance.Component{
+		{Name: instance.ComponentRedis},
+		{Name: instance.ComponentPostgres},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged["REDIS"] != "8" || merged["MYSQL"] != "5.7" || merged["POSTGRES"] != "16" {
+		t.Fatalf("merged versions = %v", merged)
 	}
 }
 

@@ -21,14 +21,7 @@ type Options struct {
 	WithLogs  bool
 }
 
-func Create(root, destination string, options Options, manifest Manifest) error {
-	if err := manifest.Validate(nil); err != nil {
-		return err
-	}
-	manifestData, err := manifestJSON(manifest)
-	if err != nil {
-		return err
-	}
+func Create(root, destination string, options Options) error {
 	items := []string{"webdock.env", "config", "data"}
 	if options.WithSites {
 		items = append(items, "sites")
@@ -61,18 +54,6 @@ func Create(root, destination string, options Options, manifest Manifest) error 
 	}
 	gz := gzip.NewWriter(tmp)
 	tw := tar.NewWriter(gz)
-	manifestHeader := &tar.Header{
-		Name:     "manifest.json",
-		Mode:     0o600,
-		Size:     int64(len(manifestData)),
-		Typeflag: tar.TypeReg,
-	}
-	if err := tw.WriteHeader(manifestHeader); err != nil {
-		return fmt.Errorf("write manifest header: %w", err)
-	}
-	if _, err := tw.Write(manifestData); err != nil {
-		return fmt.Errorf("write manifest: %w", err)
-	}
 	for _, item := range items {
 		base := filepath.Join(root, item)
 		if err := filepath.WalkDir(base, func(current string, entry os.DirEntry, walkErr error) error {
@@ -186,8 +167,9 @@ type RestoreStage struct {
 }
 
 type RestorePlan struct {
-	Env     []byte
-	Replace []string
+	Env      []byte
+	Versions []byte
+	Replace  []string
 }
 
 func PrepareRestore(root, archive string, validate func(string) error) (*RestoreStage, error) {
@@ -258,6 +240,14 @@ func (s *RestoreStage) Apply(root string, force bool, plan RestorePlan) error {
 		}
 		if err := os.Chmod(filepath.Join(s.stage, "webdock.env"), 0o600); err != nil {
 			return fmt.Errorf("secure restored webdock.env: %w", err)
+		}
+	}
+	if plan.Versions != nil {
+		if err := os.WriteFile(filepath.Join(s.stage, "data", ".webdock-versions"), plan.Versions, 0o644); err != nil {
+			return fmt.Errorf("prepare restored data version state: %w", err)
+		}
+		if err := os.Chmod(filepath.Join(s.stage, "data", ".webdock-versions"), 0o644); err != nil {
+			return fmt.Errorf("secure restored data version state: %w", err)
 		}
 	}
 	targets, err := restoreTargetsForPlan(plan)
@@ -354,6 +344,10 @@ func ensureNoSymlinkParents(root, name string) error {
 func restoreTargetsForPlan(plan RestorePlan) ([]string, error) {
 	targets := []string{"webdock.env"}
 	seen := map[string]bool{"webdock.env": true}
+	if plan.Versions != nil {
+		targets = append(targets, "data/.webdock-versions")
+		seen["data/.webdock-versions"] = true
+	}
 	for _, raw := range plan.Replace {
 		name := path.Clean(filepath.ToSlash(raw))
 		if name == "." || name == "" || strings.HasPrefix(name, "../") || name == ".." || path.IsAbs(name) {
@@ -503,8 +497,7 @@ func validateEntry(header *tar.Header) (string, error) {
 	if name == "." || strings.HasPrefix(name, "../") || path.IsAbs(name) {
 		return "", fmt.Errorf("unsafe archive path %q", header.Name)
 	}
-	allowed := name == "manifest.json" ||
-		name == "webdock.env" ||
+	allowed := name == "webdock.env" ||
 		name == "config" || strings.HasPrefix(name, "config/") ||
 		name == "data" || strings.HasPrefix(name, "data/") ||
 		name == "sites" || strings.HasPrefix(name, "sites/") ||

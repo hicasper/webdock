@@ -242,7 +242,7 @@ func (a *App) prepareStart(ctx context.Context, cfg instance.Config, names []str
 	if err != nil {
 		return nil, err
 	}
-	if err := a.checkVersionMarkers(cfg, names); err != nil {
+	if err := a.checkDataVersions(cfg, names); err != nil {
 		return nil, err
 	}
 	if err := a.preflight(ctx, a.compose(cfg)); err != nil {
@@ -278,7 +278,7 @@ func (a *App) executePreparedStart(ctx context.Context, cfg instance.Config, nam
 			return err
 		}
 	}
-	return a.recordVersionMarkers(cfg, names)
+	return a.recordDataVersions(cfg, names)
 }
 
 func (a *App) startComponents(ctx context.Context, cfg instance.Config, names []string, options startOptions) error {

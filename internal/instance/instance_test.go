@@ -55,6 +55,7 @@ func TestInitCreatesUsableLayout(t *testing.T) {
 		"config/nginx/ssl/default.key",
 		"config/php/php.ini",
 		"config/redis/valkey.conf",
+		"data/.webdock-versions",
 		"logs/nginx/access.log",
 		"logs/nginx/error.log",
 	} {

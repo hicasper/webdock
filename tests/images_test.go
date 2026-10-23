@@ -172,6 +172,19 @@ func TestPHPIniHasSingleInstanceTemplate(t *testing.T) {
 	}
 }
 
+func TestPersistentDataMountsUseImageVolumePaths(t *testing.T) {
+	compose := read(t, "../templates/compose/compose.yaml.tmpl")
+	for _, want := range []string{
+		"./data/redis:/data",
+		"./data/mysql:/var/lib/mysql",
+		"./data/postgres:/var/lib/postgresql/data",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("Compose data mount missing %q", want)
+		}
+	}
+}
+
 func TestNginxBaseline(t *testing.T) {
 	text := read(t, "../templates/nginx/nginx.conf")
 	for _, want := range []string{

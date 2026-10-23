@@ -25,12 +25,13 @@ type Component struct {
 }
 
 type componentSpec struct {
-	name       string
-	env        string
-	defaultVer string
-	image      func(string) string
-	envKeys    []string
-	paths      []string
+	name           string
+	env            string
+	defaultVer     string
+	dataVersionKey string
+	image          func(string) string
+	envKeys        []string
+	paths          []string
 }
 
 var componentSpecs = []componentSpec{
@@ -51,25 +52,28 @@ var componentSpecs = []componentSpec{
 		paths:      []string{"config/php"},
 	},
 	{
-		name:       ComponentRedis,
-		env:        "ENABLE_REDIS",
-		defaultVer: "8",
-		image:      func(version string) string { return "valkey/valkey:" + version },
-		envKeys:    []string{"ENABLE_REDIS", "REDIS_PASSWORD", "REDIS_MAXMEMORY", "REDIS_BRIDGE_NETWORKS"},
-		paths:      []string{"config/redis", "data/redis"},
+		name:           ComponentRedis,
+		env:            "ENABLE_REDIS",
+		defaultVer:     "8",
+		dataVersionKey: "REDIS",
+		image:          func(version string) string { return "valkey/valkey:" + version },
+		envKeys:        []string{"ENABLE_REDIS", "REDIS_PASSWORD", "REDIS_MAXMEMORY", "REDIS_BRIDGE_NETWORKS"},
+		paths:          []string{"config/redis", "data/redis"},
 	},
 	{
-		name:       ComponentMySQL,
-		env:        "ENABLE_MYSQL",
-		defaultVer: "8.4",
-		image:      func(version string) string { return "mysql:" + version },
-		envKeys:    []string{"ENABLE_MYSQL", "MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD"},
-		paths:      []string{"config/mysql", "data/mysql"},
+		name:           ComponentMySQL,
+		env:            "ENABLE_MYSQL",
+		defaultVer:     "8.4",
+		dataVersionKey: "MYSQL",
+		image:          func(version string) string { return "mysql:" + version },
+		envKeys:        []string{"ENABLE_MYSQL", "MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD"},
+		paths:          []string{"config/mysql", "data/mysql"},
 	},
 	{
-		name:       ComponentPostgres,
-		env:        "ENABLE_POSTGRES",
-		defaultVer: "16",
+		name:           ComponentPostgres,
+		env:            "ENABLE_POSTGRES",
+		defaultVer:     "16",
+		dataVersionKey: "POSTGRES",
 		image: func(version string) string {
 			return "tensorchord/vchord-suite:pg" + version + "-latest"
 		},

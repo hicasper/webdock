@@ -108,6 +108,9 @@ func Init(root string) (Config, error) {
 	if err := render.Compose(root, cfg.ComposeData()); err != nil {
 		return Config{}, err
 	}
+	if err := writeNewFile(VersionStatePath(root), RenderVersionState(nil), 0o644); err != nil {
+		return Config{}, err
+	}
 	if err := writeNewFile(envPath, RenderEnv(values), 0o600); err != nil {
 		return Config{}, err
 	}

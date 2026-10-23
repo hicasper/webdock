@@ -10,12 +10,13 @@
 - 新增 `enable <component> [version]`、`disable`、`start`、`stop` 和单组件 `restart`；`up` 收敛到持久启用状态。
 - 新增基于组件和版本的动态镜像解析与 Docker 镜像存在性检查，已验证版本只记录在配置注释和文档中。
 - 新增 `db backup mysql|postgres` 在线逻辑备份：MySQL 使用 gzip SQL，PostgreSQL 使用 custom dump。
-- 完整备份新增精简 `manifest.json`，每个组件只记录一个启用版本字符串或 `null`。
+- 完整备份不再生成独立 `manifest.json`；组件启停和配置版本从归档内 `webdock.env` 读取。
 - 恢复支持逐组件版本冲突确认：`y` 接受归档版本和数据，`n` 跳过当前组件并继续后续组件。
-- Redis、MySQL、PostgreSQL 新增 `.webdock-version` 数据版本标记；版本变化时默认中止，确认后才强制启动并更新标记。
+- Redis、MySQL、PostgreSQL 的实际数据版本统一记录在 `data/.webdock-versions`；版本变化时默认中止，确认并成功启动后才更新该文件。
 
 ### Changed
 
+- 数据版本键合并进组件描述，布局校验会提前解析 `.webdock-versions`，精简重复的恢复测试 setup。
 - Valkey 组件、服务、容器、profile 和环境变量统一更名为 `redis`，实际镜像仍使用 `valkey/valkey`；Redis 支持 7、8。
 - Compose 的五个服务全部使用同名 profile，Nginx、PHP、Redis、MySQL、PostgreSQL 不再绑定为固定容器栈。
 - MySQL 与 PostgreSQL 可以同时启用；删除 `DB_ENGINE`、`db use` 和单数据库选择模型。
@@ -33,7 +34,7 @@
 - 在 Debian amd64、1 vCPU / 512 MB Linux Docker runner 上验证默认只启动 Nginx，随后启用 PHP 8.4、Redis 7、MySQL 8.4、PostgreSQL 16 并分别启动成功。
 - 验证 `stop redis`/`start redis` 不改变持久状态，Redis 7 和 8 的镜像标签可实际启动并通过认证探活。
 - 验证 MySQL 和 PostgreSQL 逻辑备份可以生成有效 gzip SQL / custom dump，并可由数据库客户端或 `pg_restore --list` 读取。
-- 验证完整备份的 `manifest.json` 只记录版本字符串或 `null`，备份期间运行组件和临时停止组件在恢复后各自保持原状态。
+- 验证完整备份从 `webdock.env` 恢复组件启用状态，逐组件合并 `.webdock-versions`，备份期间运行组件和临时停止组件在恢复后各自保持原状态。
 - 验证 Redis 数据版本标记从 7 变为 8 时默认 n 中止，确认 y 后才启动并更新标记。
 
 ## [0.1.0] - 2026-10-22
@@ -69,6 +70,7 @@
 
 ### Fixed
 
+- 修复 PostgreSQL 实际数据被镜像 `VOLUME` 匿名卷遮蔽、未写入 `data/postgres` 的问题；数据目录改为直接挂载到镜像声明的精确路径，Webdock 版本状态集中保存在 `data/.webdock-versions`，完整备份和恢复可以覆盖 PostgreSQL 数据。
 - 移除 MySQL 的 `log_error = stderr` 覆盖；该值会在数据目录生成 `stderr.err`。现在保持官方镜像默认 stderr 日志，日志由 Docker 管理且不会混入持久数据。
 - 修复 Valkey 8.0 健康检查认证变量兼容问题，统一使用 `REDISCLI_AUTH`。
 - 修复 MySQL、Valkey 健康检查将密码放入进程参数的问题，改为容器内环境变量传递。

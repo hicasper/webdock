@@ -8,6 +8,7 @@ import (
 
 func ValidateLayout(cfg Config) error {
 	files := []string{"webdock.env", "compose.yaml"}
+	files = append(files, filepath.Join("data", ".webdock-versions"))
 	add := func(enabled bool, names ...string) {
 		if enabled {
 			files = append(files, names...)
@@ -42,6 +43,9 @@ func ValidateLayout(cfg Config) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("required file %s is not a regular file", name)
 		}
+	}
+	if _, err := LoadVersionState(cfg.Root); err != nil {
+		return err
 	}
 	return nil
 }
