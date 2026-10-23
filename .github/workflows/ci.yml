@@ -1,4 +1,5 @@
 name: CI
+
 on:
   pull_request:
     paths:
@@ -26,9 +27,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: webdock-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   changes:
-    name: Detect image changes
+    name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -36,6 +41,7 @@ jobs:
       pull-requests: read
     outputs:
       images: ${{ steps.matrix.outputs.images }}
+      binaries: ${{ steps.matrix.outputs.binaries }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -50,13 +56,20 @@ jobs:
               - "images/nginx/**"
             php:
               - "images/php/**"
+            binaries:
+              - "cmd/**"
+              - "internal/**"
+              - "templates/**"
+              - "go.mod"
+              - "go.sum"
 
-      - name: Build image matrix
+      - name: Build job outputs
         id: matrix
         env:
           EVENT_NAME: ${{ github.event_name }}
           NGINX_CHANGED: ${{ steps.filter.outputs.nginx }}
           PHP_CHANGED: ${{ steps.filter.outputs.php }}
+          BINARIES_CHANGED: ${{ steps.filter.outputs.binaries }}
         run: |
           set -euo pipefail
           images='[]'
@@ -68,7 +81,13 @@ jobs:
             images="$(jq -c '. + [{"component":"php","context":"images/php","dockerfile":"images/php/Dockerfile","tag":"php-8.4"}]' <<<"${images}")"
           fi
 
+          binaries="${BINARIES_CHANGED:-false}"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            binaries=true
+          fi
+
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
+          echo "binaries=${binaries}" >> "${GITHUB_OUTPUT}"
 
   test:
     name: Go checks
@@ -107,7 +126,7 @@ jobs:
         run: go build -trimpath -o bin/webdock ./cmd/webdock
 
   images:
-    name: ${{ matrix.component }}
+    name: Image ${{ matrix.component }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs:
@@ -197,3 +216,142 @@ jobs:
             org.opencontainers.image.title=webdock-${{ matrix.component }}
           cache-from: type=gha,scope=webdock-${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=webdock-${{ matrix.component }}
+
+  build-binaries:
+    name: Binary ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - test
+      - changes
+    if: needs.changes.outputs.binaries == 'true' && github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          output="dist/webdock-linux-${GOARCH}"
+          go build -trimpath -ldflags="-s -w" -o "${output}" ./cmd/webdock
+          test -s "${output}"
+
+      - name: Generate checksum
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum "webdock-linux-${{ matrix.arch }}" > "webdock-linux-${{ matrix.arch }}.sha256"
+
+      - name: Verify amd64 binary
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          expected="webdock $(tr -d '[:space:]' < cmd/webdock/VERSION)"
+          actual="$(dist/webdock-linux-amd64 --version)"
+          test "${actual}" = "${expected}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webdock-linux-${{ matrix.arch }}
+          path: |
+            dist/webdock-linux-${{ matrix.arch }}
+            dist/webdock-linux-${{ matrix.arch }}.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+  publish-binaries:
+    name: Update GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build-binaries
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release artifacts
+        run: |
+          set -euo pipefail
+          test -s dist/webdock-linux-amd64
+          test -s dist/webdock-linux-arm64
+          test -s dist/webdock-linux-amd64.sha256
+          test -s dist/webdock-linux-arm64.sha256
+          cd dist
+          sha256sum -c webdock-linux-amd64.sha256
+          sha256sum -c webdock-linux-arm64.sha256
+
+      - name: Prepare release metadata
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < cmd/webdock/VERSION)"
+          cat > dist/build-info.txt <<EOF
+          version=${version}
+          commit=${GITHUB_SHA}
+          ref=${GITHUB_REF_NAME}
+          built_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          EOF
+          cat > dist/release-notes.md <<EOF
+          Webdock ${version} rolling binary release.
+
+          This release is updated in place whenever the source code changes. Download the binary for your Linux architecture:
+
+          - \`webdock-linux-amd64\`: Linux x86-64
+          - \`webdock-linux-arm64\`: Linux ARM64
+
+          Verify the download with the matching \`.sha256\` file. Build details are recorded in \`build-info.txt\`.
+          EOF
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < cmd/webdock/VERSION)"
+          tag="v${version}"
+
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Webdock ${tag}" \
+              --notes-file dist/release-notes.md
+          else
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Webdock ${tag}" \
+              --notes-file dist/release-notes.md
+          fi
+
+          gh release upload "${tag}" \
+            dist/webdock-linux-amd64 \
+            dist/webdock-linux-arm64 \
+            dist/webdock-linux-amd64.sha256 \
+            dist/webdock-linux-arm64.sha256 \
+            dist/build-info.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber

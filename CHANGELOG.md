@@ -26,7 +26,7 @@
 - 删除 PHP 镜像中重复的 `php.ini` 和单独的 `composer --version` 构建层，PHP 配置只保留实例模板这一份来源。
 - Nginx 镜像显式选择 `anacron` 满足 `logrotate` 的调度器依赖，避免引入并保留未运行的 `cron` 和 `systemd` 依赖链。
 - s6 服务注册迁移到标准 `user-bundles.d/user/contents.d/` 空文件布局，移除对旧 `s6-rc.d/user` 兼容路径的依赖。
-- CI 增加路径过滤和镜像变更检测：文档等无关改动不触发 workflow，只有对应镜像目录变化时才重建 Nginx/PHP 镜像；二进制 Release 只响应运行时代码、模板和 Go 依赖变化。
+- GitHub Actions 合并为单一 `ci.yml`：文档等无关改动不触发 workflow，镜像和二进制分别按实际变更构建，PR 只验证不发布，master/main 推送按需更新镜像和滚动 Release。
 
 ### Validation
 
