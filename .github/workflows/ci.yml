@@ -291,6 +291,7 @@ jobs:
       - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: webdock-linux-*
           path: dist
           merge-multiple: true
 
