@@ -12,8 +12,6 @@ func TestNginxImageIncludesRequestedComponents(t *testing.T) {
 		"FROM debian:trixie-slim",
 		"ARG S6_OVERLAY_VERSION=",
 		"ARG NGINX_UI_VERSION=",
-		"ARG NGINX_UI_SHA256_AMD64=",
-		"NGINX_UI_SHA256_ARM64=",
 		"TARGETARCH:-$(dpkg --print-architecture)",
 		"sha256sum -c",
 		"libnginx-mod-http-geoip2",

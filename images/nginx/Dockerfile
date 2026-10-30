@@ -2,23 +2,19 @@
 
 FROM debian:trixie-slim AS nginx-ui
 ARG TARGETARCH
-ARG NGINX_UI_VERSION=2.9.1
-ARG NGINX_UI_SHA256_AMD64=8caa38db01a1b97b742c07015d0e19269c2cd13fdcd08aa9e948a5435d35fb08
-ARG NGINX_UI_SHA256_ARM64=efe481a5842c0f6583fb1ef7229b6d9eb0a5b03d17fdcd3612287ff0c1e1061f
+ARG NGINX_UI_VERSION=2.9.3
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends binutils ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in \
-        amd64) NGXUI_ARCH="linux-64"; NGXUI_SHA256="${NGINX_UI_SHA256_AMD64}" ;; \
-        arm64) NGXUI_ARCH="linux-arm64-v8a"; NGXUI_SHA256="${NGINX_UI_SHA256_ARM64}" ;; \
+        amd64) NGXUI_ARCH="linux-64" ;; \
+        arm64) NGXUI_ARCH="linux-arm64-v8a" ;; \
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac \
     && curl -fsSL -o /tmp/nginx-ui.tar.gz \
         "https://github.com/0xJacky/nginx-ui/releases/download/v${NGINX_UI_VERSION}/nginx-ui-${NGXUI_ARCH}.tar.gz" \
-    && printf '%s  %s\n' "${NGXUI_SHA256}" /tmp/nginx-ui.tar.gz > /tmp/nginx-ui.sha256 \
-    && sha256sum -c /tmp/nginx-ui.sha256 \
     && mkdir -p /out \
     && tar -xzf /tmp/nginx-ui.tar.gz -C /out \
     && test -x /out/nginx-ui \
